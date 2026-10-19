@@ -1,0 +1,120 @@
+{
+  "app_name": "KisanMitra AI",
+  "app_tagline": "A Multilingual Intelligent Farming Assistant",
+  "nav_home": "Home",
+  "nav_crop": "Crop Advice",
+  "nav_weather": "Weather",
+  "nav_chat": "Ask AI",
+  "nav_plant": "Plant Check",
+  "nav_history": "History",
+  "footer_text": "KisanMitra AI • Mini Project MVP",
+  "language_toggle": "हिंदी",
+  
+  "home": {
+    "badge": "Smart Krishi AI Assistant",
+    "hero_title": "Empowering Every Farmer with Simple AI Advice",
+    "hero_subtitle": "Get instant answers for crop planning, real-time local weather forecasts, AI plant disease check, and multilingual agricultural help.",
+    "cta_crop_title": "Crop Advisory",
+    "cta_crop_desc": "Get tailored sowing time, irrigation schedules, and fertilizer guidelines for your crops.",
+    "cta_weather_title": "Weather & Agri-Tips",
+    "cta_weather_desc": "Live temperature, rain alerts, 5-day forecast and actionable farming tips for today.",
+    "cta_chat_title": "Ask KisanMitra",
+    "cta_chat_desc": "Chat in simple words about crop diseases, fertilizers, government schemes, or pest attacks.",
+    "cta_plant_title": "Plant Photo Check",
+    "cta_plant_desc": "Upload leaf or plant photo to diagnose diseases, organic remedies and protection tips.",
+    "cta_history_title": "Query History",
+    "cta_history_desc": "Review all your past farming recommendations and diagnostic records anytime.",
+    "quick_guide_title": "Why Farmers Love KisanMitra AI",
+    "benefit1": "Built for rural phones with large, easy-to-tap buttons",
+    "benefit2": "Complete answers in simple Hindi and English",
+    "benefit3": "Safe, practical advice with organic remedies first"
+  },
+
+  "crop": {
+    "title": "🌾 Crop Advisory & Planning",
+    "subtitle": "Select your crop and season to get customized schedule and care steps.",
+    "crop_label": "Crop Name",
+    "crop_placeholder": "Select or type your crop",
+    "other_crop": "Other Crop (Enter below)",
+    "season_label": "Season",
+    "season_kharif": "Kharif (Monsoon - June to Oct)",
+    "season_rabi": "Rabi (Winter - Oct to March)",
+    "season_zaid": "Zaid (Summer - March to June)",
+    "soil_label": "Soil Type (Optional)",
+    "soil_placeholder": "e.g., Loamy (दोमट), Black soil (काली मिट्टी), Sandy",
+    "question_label": "Your Specific Question (Optional)",
+    "question_placeholder": "e.g., How much DAP fertilizer needed? When is the best sowing time?",
+    "submit_btn": "Get Crop Advice",
+    "loading_btn": "Consulting KisanMitra AI...",
+    "results_title": "Recommended Crop Schedule & Advisory",
+    "empty_state": "Fill the form above to generate farming instructions."
+  },
+
+  "weather": {
+    "title": "🌦️ Weather Forecast & Farm Advice",
+    "subtitle": "Accurate local weather and smart farm management recommendations.",
+    "search_placeholder": "Enter city or village name (e.g., Jaipur, Pune, Patna)...",
+    "search_btn": "Check Weather",
+    "geo_btn": "Use My Location",
+    "current_weather": "Current Weather",
+    "temp": "Temperature",
+    "humidity": "Humidity",
+    "wind": "Wind Speed",
+    "rain_prob": "Rain Probability",
+    "forecast_title": "5-Day Forecast",
+    "farming_tip_title": "🌱 Smart Farming Tip for Today",
+    "loading": "Fetching live meteorological data...",
+    "error_geo": "Unable to detect your location. Please type your city name manually."
+  },
+
+  "chat": {
+    "title": "💬 Ask KisanMitra AI",
+    "subtitle": "Your friendly agricultural assistant. Ask anything about crops, soil, pests, and fertilizers.",
+    "placeholder": "Type your farming question here...",
+    "send_btn": "Send",
+    "listening": "Thinking...",
+    "welcome_msg": "Namaste! 🙏 I am KisanMitra AI. How can I assist you with your farming, crops, or fertilizers today?",
+    "quick_pill1": "When to irrigate wheat crop?",
+    "quick_pill2": "How to control stem borer in paddy?",
+    "quick_pill3": "Organic compost recipe",
+    "disclaimer": "KisanMitra AI assists with agricultural guidance. For critical issues, consult your local Krishi Vigyan Kendra (KVK)."
+  },
+
+  "plant": {
+    "title": "🌿 Plant Health & Photo Diagnosis",
+    "subtitle": "Take a photo of diseased leaves or stems to identify the problem and get safe treatments.",
+    "upload_instruction": "Upload or take a photo of the affected plant leaf",
+    "upload_button": "Choose Photo / Take Photo",
+    "crop_optional": "Crop name (Optional)",
+    "crop_placeholder": "e.g. Tomato, Wheat, Cotton",
+    "analyze_btn": "Diagnose Plant Problem",
+    "analyzing": "Analyzing leaf symptoms with AI...",
+    "diagnosis_title": "Diagnosis Report",
+    "disclaimer": "This is an AI suggestion, not a confirmed diagnosis. Consult an agriculture expert for serious problems.",
+    "supported_types": "Supports JPG, PNG, WEBP (Max 5MB)",
+    "change_photo": "Change Photo"
+  },
+
+  "history": {
+    "title": "📜 Farm Advisory History",
+    "subtitle": "All your previous crop guides, weather checks, chat inquiries, and plant scans.",
+    "all": "All Queries",
+    "chat": "Chat",
+    "crop": "Crop Advice",
+    "weather": "Weather",
+    "plant": "Plant Scans",
+    "empty": "No queries found in this category yet.",
+    "delete_btn": "Delete",
+    "deleted_toast": "Query deleted successfully.",
+    "view_details": "View Full Details",
+    "hide_details": "Hide Details"
+  },
+
+  "common": {
+    "loading": "Loading...",
+    "error": "Error occurred",
+    "retry": "Try Again",
+    "back_to_home": "Back to Home",
+    "copied": "Copied to clipboard!"
+  }
+}
