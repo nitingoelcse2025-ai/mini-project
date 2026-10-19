@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { Copy, Check, Bot, User } from 'lucide-react';
+import { Copy, Check, AlertTriangle } from 'lucide-react';
+import { useLanguage } from '../context/LanguageContext';
 
 const formatContent = (text) => {
   if (!text) return null;
@@ -56,7 +57,9 @@ const renderBold = (str) => {
 };
 
 const ChatBubble = ({ message }) => {
+  const { t } = useLanguage();
   const isUser = message.role === 'user';
+  const isFallback = message.source === 'fallback';
   const [copied, setCopied] = useState(false);
 
   const handleCopy = () => {
@@ -80,21 +83,29 @@ const ChatBubble = ({ message }) => {
             : 'bg-white border-2 border-emerald-100 text-stone-900 rounded-tl-sm'
         }`}
       >
+        {/* Offline Demo Banner when source is fallback */}
+        {!isUser && isFallback && (
+          <div className="mb-3 px-3 py-1.5 bg-amber-50 border border-amber-300 text-amber-900 rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-xs">
+            <AlertTriangle className="w-3.5 h-3.5 text-amber-600 flex-shrink-0" />
+            <span>{t('common.offline_demo_banner')}</span>
+          </div>
+        )}
+
         <div className="flex items-center justify-between gap-3 mb-1.5 pb-1 border-b border-black/5">
           <span
             className={`text-xs font-bold tracking-wide uppercase ${
               isUser ? 'text-emerald-100' : 'text-emerald-800'
             }`}
           >
-            {isUser ? 'आप (Farmer)' : 'किसानमित्र एआई (KisanMitra)'}
+            {isUser ? t('chat.user_label') : t('chat.assistant_label')}
           </span>
           {!isUser && (
             <button
               onClick={handleCopy}
               type="button"
               className="text-stone-400 hover:text-emerald-700 p-1 rounded-lg hover:bg-stone-100 transition-colors"
-              title="Copy answer"
-              aria-label="Copy text"
+              title={t('common.copy_answer')}
+              aria-label={t('common.copy_answer')}
             >
               {copied ? <Check className="w-4 h-4 text-emerald-600" /> : <Copy className="w-4 h-4" />}
             </button>
@@ -122,3 +133,4 @@ const ChatBubble = ({ message }) => {
 };
 
 export default ChatBubble;
+

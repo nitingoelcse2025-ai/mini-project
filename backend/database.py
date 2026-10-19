@@ -7,12 +7,13 @@ import sqlite3
 import os
 from typing import List, Dict, Optional, Any
 
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "kisanmitra.db")
+DB_PATH = os.getenv("DATABASE_PATH") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "kisanmitra.db")
 
 
 def get_db_connection() -> sqlite3.Connection:
     """Creates a connection to the SQLite database with Row factory."""
-    conn = sqlite3.connect(DB_PATH)
+    db_path = os.getenv("DATABASE_PATH") or DB_PATH
+    conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     return conn
 

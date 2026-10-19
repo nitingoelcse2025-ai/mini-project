@@ -85,8 +85,13 @@ def seed_sample_data():
 def create_app():
     app = Flask(__name__)
 
-    # Enable CORS for frontend clients
-    CORS(app, resources={r"/api/*": {"origins": "*"}})
+    # 5MB maximum file upload size
+    app.config["MAX_CONTENT_LENGTH"] = 5 * 1024 * 1024
+
+    # Restrict CORS to configured origins
+    cors_origins_raw = os.getenv("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173")
+    cors_origins = [o.strip() for o in cors_origins_raw.split(",") if o.strip()]
+    CORS(app, resources={r"/api/*": {"origins": cors_origins}})
 
     # Initialize Database
     init_db()
@@ -111,19 +116,34 @@ def create_app():
     # Global JSON error handlers
     @app.errorhandler(400)
     def bad_request(e):
-        return jsonify({"error": str(e.description or "Bad request")}), 400
+        return jsonify({"error": str(getattr(e, "description", None) or "Bad request")}), 400
 
     @app.errorhandler(404)
     def not_found(e):
-        return jsonify({"error": str(e.description or "Resource not found")}), 404
+        return jsonify({"error": str(getattr(e, "description", None) or "Resource not found")}), 404
+
+    @app.errorhandler(405)
+    def method_not_allowed(e):
+        return jsonify({"error": "Method not allowed. / यह HTTP विधि स्वीकृत नहीं है।"}), 405
 
     @app.errorhandler(413)
     def request_entity_too_large(e):
         return jsonify({"error": "File size too large (Maximum allowed is 5MB)."}), 413
 
+    @app.errorhandler(429)
+    def too_many_requests(e):
+        msg = getattr(e, "description", None) or "Rate limit or quota exceeded. Please try again shortly."
+        return jsonify({"error": str(msg)}), 429
+
     @app.errorhandler(500)
     def internal_error(e):
+        logger.exception(f"Unhandled 500 error: {e}")
         return jsonify({"error": "Internal server error. Please try again later."}), 500
+
+    @app.errorhandler(503)
+    def service_unavailable(e):
+        msg = getattr(e, "description", None) or "Service temporarily unavailable. Please try again later."
+        return jsonify({"error": str(msg)}), 503
 
     return app
 
@@ -135,8 +155,11 @@ if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8')
 
 if __name__ == "__main__":
+    host = os.getenv("HOST", "127.0.0.1").strip() or "127.0.0.1"
     port = int(os.getenv("PORT", 5000))
-    debug = os.getenv("FLASK_ENV") == "development"
-    print(f"[KisanMitra AI] Backend running on http://127.0.0.1:{port}")
-    app.run(host="0.0.0.0", port=port, debug=debug)
+    debug_val = os.getenv("FLASK_DEBUG", "false").strip().lower()
+    debug = debug_val in ("true", "1", "yes")
+
+    print(f"[KisanMitra AI] Backend running on http://{host}:{port} (debug={debug})")
+    app.run(host=host, port=port, debug=debug)
 

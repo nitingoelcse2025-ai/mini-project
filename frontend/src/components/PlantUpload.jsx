@@ -1,8 +1,71 @@
 import React, { useState, useRef } from 'react';
-import { Camera, Upload, Trash2, CheckCircle2, AlertTriangle, ArrowRight } from 'lucide-react';
+import { Camera, Trash2, AlertTriangle, ArrowRight } from 'lucide-react';
 import { useLanguage } from '../context/LanguageContext';
 
 const MAX_SIZE_MB = 5;
+
+/**
+ * Downscales an image client-side to a maximum of 1600px on its longest side.
+ * Keeps canvas rendering at JPEG quality 0.85.
+ */
+const downscaleImage = (file, maxDimension = 1600, quality = 0.85) => {
+  return new Promise((resolve) => {
+    if (!file || !file.type.startsWith('image/')) {
+      return resolve(file);
+    }
+
+    const reader = new FileReader();
+    reader.onerror = () => resolve(file);
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onerror = () => resolve(file);
+      img.onload = () => {
+        let width = img.width;
+        let height = img.height;
+
+        // If already within bounds, return original
+        if (width <= maxDimension && height <= maxDimension) {
+          return resolve(file);
+        }
+
+        if (width > height) {
+          if (width > maxDimension) {
+            height = Math.round((height * maxDimension) / width);
+            width = maxDimension;
+          }
+        } else {
+          if (height > maxDimension) {
+            width = Math.round((width * maxDimension) / height);
+            height = maxDimension;
+          }
+        }
+
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return resolve(file);
+
+        ctx.drawImage(img, 0, 0, width, height);
+        canvas.toBlob(
+          (blob) => {
+            if (!blob) return resolve(file);
+            const baseName = file.name.replace(/\.[^/.]+$/, '');
+            const resizedFile = new File([blob], `${baseName}.jpg`, {
+              type: 'image/jpeg',
+              lastModified: Date.now(),
+            });
+            resolve(resizedFile);
+          },
+          'image/jpeg',
+          quality
+        );
+      };
+      img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+  });
+};
 
 const PlantUpload = ({ onDiagnose, loading }) => {
   const { t } = useLanguage();
@@ -11,6 +74,7 @@ const PlantUpload = ({ onDiagnose, loading }) => {
   const [previewUrl, setPreviewUrl] = useState(null);
   const [cropHint, setCropHint] = useState('');
   const [fileError, setFileError] = useState('');
+  const [isProcessing, setIsProcessing] = useState(false);
 
   const handleFileChange = (e) => {
     const file = e.target.files?.[0];
@@ -22,12 +86,12 @@ const PlantUpload = ({ onDiagnose, loading }) => {
     if (!file) return;
 
     if (!file.type.startsWith('image/')) {
-      setFileError('Please select a valid image file (JPG, PNG, WEBP).');
+      setFileError(t('plant.invalid_image_type'));
       return;
     }
 
     if (file.size > MAX_SIZE_MB * 1024 * 1024) {
-      setFileError(`Image size must be under ${MAX_SIZE_MB}MB.`);
+      setFileError(t('plant.size_limit_error'));
       return;
     }
 
@@ -45,14 +109,27 @@ const PlantUpload = ({ onDiagnose, loading }) => {
     }
   };
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
     if (!selectedFile) {
-      setFileError('Please upload or capture a photo first.');
+      setFileError(t('plant.photo_required'));
       return;
     }
-    onDiagnose({ file: selectedFile, crop: cropHint.trim() });
+
+    setIsProcessing(true);
+    try {
+      // Downscale image to max 1600px on the longest side with 0.85 JPEG quality
+      const processedFile = await downscaleImage(selectedFile, 1600, 0.85);
+      onDiagnose({ file: processedFile, crop: cropHint.trim() });
+    } catch (err) {
+      console.warn('Downscaling failed, falling back to original file:', err);
+      onDiagnose({ file: selectedFile, crop: cropHint.trim() });
+    } finally {
+      setIsProcessing(false);
+    }
   };
+
+  const isBusy = loading || isProcessing;
 
   return (
     <form onSubmit={handleSubmit} className="bg-white rounded-3xl p-6 sm:p-8 border border-emerald-100 shadow-sm space-y-6">
@@ -101,7 +178,8 @@ const PlantUpload = ({ onDiagnose, loading }) => {
               <button
                 type="button"
                 onClick={handleClear}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-red-100 hover:bg-red-200 text-red-800 font-bold text-sm rounded-xl transition-colors"
+                disabled={isBusy}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-red-100 hover:bg-red-200 text-red-800 font-bold text-sm rounded-xl transition-colors cursor-pointer disabled:opacity-50"
               >
                 <Trash2 className="w-4 h-4" />
                 <span>{t('plant.change_photo')}</span>
@@ -128,6 +206,7 @@ const PlantUpload = ({ onDiagnose, loading }) => {
           value={cropHint}
           onChange={(e) => setCropHint(e.target.value)}
           placeholder={t('plant.crop_placeholder')}
+          disabled={isBusy}
           className="w-full text-base sm:text-lg bg-stone-50 border-2 border-stone-200 focus:border-emerald-600 focus:bg-white rounded-2xl p-3.5 outline-none transition-all"
         />
       </div>
@@ -135,11 +214,17 @@ const PlantUpload = ({ onDiagnose, loading }) => {
       {/* Submit Button */}
       <button
         type="submit"
-        disabled={loading || !selectedFile}
+        disabled={isBusy || !selectedFile}
         className="w-full py-4 px-6 rounded-2xl font-extrabold text-lg sm:text-xl text-white bg-emerald-600 hover:bg-emerald-700 active:scale-[0.98] transition-all shadow-lg shadow-emerald-200 flex items-center justify-center gap-3 disabled:opacity-50 cursor-pointer"
       >
-        <span>{loading ? t('plant.analyzing') : t('plant.analyze_btn')}</span>
-        {!loading && <ArrowRight className="w-6 h-6" />}
+        <span>
+          {isProcessing
+            ? t('plant.compressing')
+            : loading
+            ? t('plant.analyzing')
+            : t('plant.analyze_btn')}
+        </span>
+        {!isBusy && <ArrowRight className="w-6 h-6" />}
       </button>
     </form>
   );

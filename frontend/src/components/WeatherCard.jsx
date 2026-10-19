@@ -9,6 +9,7 @@ import {
   Wind,
   Compass,
   Sparkles,
+  AlertTriangle,
 } from 'lucide-react';
 import { useLanguage } from '../context/LanguageContext';
 
@@ -103,6 +104,12 @@ const WeatherCard = ({ data }) => {
       {/* AI Smart Farming Tip for Today */}
       {farming_tip && (
         <div className="bg-amber-50 border-2 border-amber-300 rounded-3xl p-5 sm:p-6 shadow-md relative overflow-hidden">
+          {data.source === 'fallback' && (
+            <div className="mb-4 bg-amber-100/90 border border-amber-400 text-amber-950 rounded-2xl p-3 font-bold text-xs sm:text-sm flex items-center gap-2 shadow-xs">
+              <AlertTriangle className="w-4 h-4 text-amber-700 flex-shrink-0" />
+              <span>{t('common.offline_demo_banner')}</span>
+            </div>
+          )}
           <div className="flex items-center gap-2.5 text-amber-900 font-extrabold text-lg sm:text-xl mb-3">
             <Sparkles className="w-6 h-6 text-amber-600 flex-shrink-0" />
             <h3>{t('weather.farming_tip_title')}</h3>

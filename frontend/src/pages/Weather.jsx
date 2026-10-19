@@ -1,10 +1,12 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import apiClient, { getErrorMessage } from '../api/client';
 import { useLanguage } from '../context/LanguageContext';
 import WeatherCard from '../components/WeatherCard';
 import Loader from '../components/Loader';
 import ErrorMessage from '../components/ErrorMessage';
 import { Search, MapPin, CloudSun } from 'lucide-react';
+
+const LAST_CITY_KEY = 'kisanmitra_last_city';
 
 const Weather = () => {
   const { t, language } = useLanguage();
@@ -13,12 +15,39 @@ const Weather = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
-  // Auto-fetch default city on initial mount
+  // Keep track of active query source for language changes
+  const activeQueryRef = useRef(null); // { type: 'city', value: '...' } or { type: 'coords', lat, lon }
+
+  // Load last searched city on mount if present; otherwise show empty state prompt
   useEffect(() => {
-    fetchWeatherByCity('Jaipur');
+    try {
+      const savedCity = localStorage.getItem(LAST_CITY_KEY);
+      if (savedCity && savedCity.trim()) {
+        setCityInput(savedCity.trim());
+        fetchWeatherByCity(savedCity.trim(), false); // save=false for automatic restore
+      }
+    } catch (e) {
+      console.warn('Failed to read last city from localStorage:', e);
+    }
+  }, []);
+
+  // Reload weather on language change WITHOUT saving to history (save=false)
+  const isFirstMountRef = useRef(true);
+  useEffect(() => {
+    if (isFirstMountRef.current) {
+      isFirstMountRef.current = false;
+      return;
+    }
+    if (activeQueryRef.current) {
+      if (activeQueryRef.current.type === 'city') {
+        fetchWeatherByCity(activeQueryRef.current.value, false);
+      } else if (activeQueryRef.current.type === 'coords') {
+        fetchWeatherByCoords(activeQueryRef.current.lat, activeQueryRef.current.lon, false);
+      }
+    }
   }, [language]);
 
-  const fetchWeatherByCity = async (cityName) => {
+  const fetchWeatherByCity = async (cityName, saveToHistory = false) => {
     const q = cityName.trim();
     if (!q) return;
 
@@ -30,24 +59,25 @@ const Weather = () => {
         params: {
           city: q,
           language,
+          save: saveToHistory ? 'true' : 'false',
         },
       });
       setWeatherData(response.data);
+      activeQueryRef.current = { type: 'city', value: q };
+      try {
+        localStorage.setItem(LAST_CITY_KEY, q);
+      } catch (e) {
+        console.warn('Failed to save last city to localStorage:', e);
+      }
     } catch (err) {
-      setError(
-        getErrorMessage(
-          err,
-          language === 'hi'
-            ? `'${q}' का मौसम डेटा प्राप्त नहीं हो सका। कृपया सही शहर या गांव का नाम लिखें।`
-            : `Could not retrieve weather data for '${q}'. Please check the spelling.`
-        )
-      );
+      const defaultErr = `${t('weather.fetch_error_prefix')} '${q}'.`;
+      setError(getErrorMessage(err, defaultErr));
     } finally {
       setLoading(false);
     }
   };
 
-  const fetchWeatherByCoords = async (lat, lon) => {
+  const fetchWeatherByCoords = async (lat, lon, saveToHistory = false) => {
     setLoading(true);
     setError('');
 
@@ -56,13 +86,15 @@ const Weather = () => {
         params: {
           lat,
           lon,
-          city: 'My Location',
+          city: t('weather.my_location'),
           language,
+          save: saveToHistory ? 'true' : 'false',
         },
       });
       setWeatherData(response.data);
+      activeQueryRef.current = { type: 'coords', lat, lon };
     } catch (err) {
-      setError(getErrorMessage(err, 'Failed to retrieve weather for your coordinates.'));
+      setError(getErrorMessage(err, t('weather.geo_error_coords')));
     } finally {
       setLoading(false);
     }
@@ -71,7 +103,7 @@ const Weather = () => {
   const handleSearchSubmit = (e) => {
     e.preventDefault();
     if (cityInput.trim()) {
-      fetchWeatherByCity(cityInput);
+      fetchWeatherByCity(cityInput, true); // save=true for user-initiated search
     }
   };
 
@@ -87,9 +119,9 @@ const Weather = () => {
     navigator.geolocation.getCurrentPosition(
       (position) => {
         const { latitude, longitude } = position.coords;
-        fetchWeatherByCoords(latitude, longitude);
+        fetchWeatherByCoords(latitude, longitude, true); // save=true for user location
       },
-      (geoError) => {
+      () => {
         setLoading(false);
         setError(t('weather.error_geo'));
       },
@@ -144,7 +176,7 @@ const Weather = () => {
           </button>
 
           <span className="text-xs sm:text-sm font-semibold text-stone-500">
-            📡 Open-Meteo Live API
+            {t('weather.open_meteo_credit')}
           </span>
         </div>
       </div>
@@ -157,9 +189,26 @@ const Weather = () => {
         error={error}
         onRetry={() => {
           setError('');
-          fetchWeatherByCity(cityInput || 'Jaipur');
+          if (cityInput.trim()) {
+            fetchWeatherByCity(cityInput, false);
+          }
         }}
       />
+
+      {/* Empty State Prompt if no city searched yet */}
+      {!loading && !weatherData && !error && (
+        <div className="bg-white rounded-3xl p-10 sm:p-14 text-center border-2 border-dashed border-emerald-200 space-y-4">
+          <div className="w-16 h-16 sm:w-20 sm:h-20 mx-auto rounded-3xl bg-emerald-50 text-emerald-700 flex items-center justify-center">
+            <CloudSun className="w-8 h-8 sm:w-10 sm:h-10 text-emerald-600" />
+          </div>
+          <h2 className="text-xl sm:text-2xl font-bold text-stone-800">
+            {t('weather.search_btn')}
+          </h2>
+          <p className="text-stone-600 font-medium text-base sm:text-lg max-w-lg mx-auto">
+            {t('weather.empty_state_prompt')}
+          </p>
+        </div>
+      )}
 
       {/* Weather Results Display */}
       {!loading && weatherData && <WeatherCard data={weatherData} />}

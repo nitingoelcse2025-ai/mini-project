@@ -18,9 +18,9 @@ const COMMON_CROPS = [
 ];
 
 const SEASONS = [
-  { id: 'Rabi', key: 'crop.season_rabi', tag: '❄️ रबी (Winter)' },
-  { id: 'Kharif', key: 'crop.season_kharif', tag: '🌧️ खरीफ (Monsoon)' },
-  { id: 'Zaid', key: 'crop.season_zaid', tag: '☀️ जायद (Summer)' },
+  { id: 'Rabi', key: 'crop.season_rabi', tagKey: 'crop.season_tag_rabi' },
+  { id: 'Kharif', key: 'crop.season_kharif', tagKey: 'crop.season_tag_kharif' },
+  { id: 'Zaid', key: 'crop.season_zaid', tagKey: 'crop.season_tag_zaid' },
 ];
 
 const CropForm = ({ onSubmit, loading }) => {
@@ -88,13 +88,13 @@ const CropForm = ({ onSubmit, loading }) => {
                 key={s.id}
                 type="button"
                 onClick={() => setSeason(s.id)}
-                className={`py-3 px-4 rounded-2xl font-bold text-base border-2 transition-all text-left flex items-center justify-between ${
+                className={`py-3 px-4 rounded-2xl font-bold text-base border-2 transition-all text-left flex items-center justify-between cursor-pointer ${
                   isSelected
                     ? 'bg-emerald-600 text-white border-emerald-700 shadow-md shadow-emerald-200 scale-[1.02]'
                     : 'bg-stone-50 text-stone-800 border-stone-200 hover:border-emerald-300'
                 }`}
               >
-                <span>{s.tag}</span>
+                <span>{t(s.tagKey)}</span>
                 {isSelected && <span className="text-white text-xs">✔</span>}
               </button>
             );

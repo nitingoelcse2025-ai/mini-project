@@ -12,14 +12,14 @@ const apiClient = axios.create({
 });
 
 // Helper for standardized error messages
-export const getErrorMessage = (error, defaultMsg = 'Something went wrong. Please try again.') => {
+export const getErrorMessage = (error, defaultMsg = '') => {
   if (error.response?.data?.error) {
     return error.response.data.error;
   }
   if (error.message === 'Network Error') {
-    return 'Unable to connect to the backend server. Please verify backend is running on port 5000.';
+    return 'Unable to connect to the backend server. Please verify backend is running on port 5000. / बैकएंड सर्वर से कनेक्ट करने में असमर्थ।';
   }
-  return error.message || defaultMsg;
+  return error.message || defaultMsg || 'Something went wrong. Please try again. / कुछ गलत हो गया। कृपया पुनः प्रयास करें।';
 };
 
 export default apiClient;

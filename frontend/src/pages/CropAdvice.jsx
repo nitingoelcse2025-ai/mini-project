@@ -81,7 +81,7 @@ const CropAdvice = () => {
       });
       setAdviceResult(response.data);
     } catch (err) {
-      setError(getErrorMessage(err, 'Failed to generate crop advice. Please try again.'));
+      setError(getErrorMessage(err, t('common.default_error')));
     } finally {
       setLoading(false);
     }
@@ -118,6 +118,14 @@ const CropAdvice = () => {
       {/* Advice Display Card */}
       {adviceResult && (
         <div className="bg-white rounded-3xl p-6 sm:p-8 border-2 border-emerald-200 shadow-lg space-y-5 animate-in fade-in duration-300">
+          {/* Offline Demo Banner when source is fallback */}
+          {adviceResult.source === 'fallback' && (
+            <div className="bg-amber-50 border-2 border-amber-300 text-amber-900 rounded-2xl p-4 font-bold text-sm sm:text-base flex items-center gap-2.5 shadow-xs">
+              <span className="text-xl">⚠️</span>
+              <span>{t('common.offline_demo_banner')}</span>
+            </div>
+          )}
+
           <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 border-b border-emerald-100 pb-4">
             <div>
               <span className="text-xs font-bold uppercase tracking-wider text-emerald-800 bg-emerald-100 px-3 py-1 rounded-full">
@@ -132,10 +140,10 @@ const CropAdvice = () => {
               <button
                 onClick={handleCopy}
                 type="button"
-                className="inline-flex items-center gap-1.5 px-4 py-2 bg-stone-100 hover:bg-emerald-50 text-stone-800 hover:text-emerald-800 rounded-xl font-bold text-sm transition-colors border border-stone-200"
+                className="inline-flex items-center gap-1.5 px-4 py-2 bg-stone-100 hover:bg-emerald-50 text-stone-800 hover:text-emerald-800 rounded-xl font-bold text-sm transition-colors border border-stone-200 cursor-pointer"
               >
                 {copied ? <Check className="w-4 h-4 text-emerald-600" /> : <Copy className="w-4 h-4" />}
-                <span>{copied ? t('common.copied') : 'Copy'}</span>
+                <span>{copied ? t('common.copied') : t('common.copy')}</span>
               </button>
             </div>
           </div>

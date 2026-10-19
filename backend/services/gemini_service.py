@@ -23,8 +23,32 @@ logger = logging.getLogger(__name__)
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 
-# Preferred models in order of priority
-MODEL_CANDIDATES = ["gemini-2.5-flash", "gemini-1.5-flash", "gemini-3.8-flash"]
+
+class GeminiRateLimitError(Exception):
+    """Raised when Gemini API quota or rate limit is exhausted (429 / RESOURCE_EXHAUSTED)."""
+    pass
+
+
+def get_model_candidates() -> List[str]:
+    """
+    Returns candidate models in priority order.
+    Configured via GEMINI_MODEL (default: gemini-2.5-flash) and optional GEMINI_FALLBACK_MODELS.
+    """
+    primary = os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip() or "gemini-2.5-flash"
+    fallback_str = os.getenv("GEMINI_FALLBACK_MODELS", "").strip()
+    fallbacks = [m.strip() for m in fallback_str.split(",") if m.strip()]
+    candidates = [primary] + [m for m in fallbacks if m != primary]
+    return candidates
+
+
+def is_rate_limit_error(e: Exception) -> bool:
+    """Checks if an exception is related to rate limiting or quota exhaustion (429 / RESOURCE_EXHAUSTED)."""
+    err_str = str(e).upper()
+    if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "QUOTA" in err_str or "RATE_LIMIT" in err_str:
+        return True
+    if hasattr(e, "code") and getattr(e, "code") == 429:
+        return True
+    return False
 
 
 def get_gemini_client():
@@ -54,7 +78,10 @@ def call_gemini_text(prompt: str, system_instruction: Optional[str] = None) -> O
         config.system_instruction = system_instruction
     config.temperature = 0.4
 
-    for model_name in MODEL_CANDIDATES:
+    models = get_model_candidates()
+    rate_limit_hit = False
+
+    for model_name in models:
         try:
             response = client.models.generate_content(
                 model=model_name,
@@ -62,10 +89,18 @@ def call_gemini_text(prompt: str, system_instruction: Optional[str] = None) -> O
                 config=config,
             )
             if response and response.text:
+                logger.info(f"Gemini text answered successfully using model '{model_name}'")
                 return response.text.strip()
         except Exception as e:
-            logger.warning(f"Error calling {model_name}: {e}")
+            if is_rate_limit_error(e):
+                rate_limit_hit = True
+                logger.warning(f"Rate limit / quota exhausted on model '{model_name}': {e}")
+            else:
+                logger.warning(f"Error calling {model_name}: {e}")
             continue
+
+    if rate_limit_hit:
+        raise GeminiRateLimitError("Gemini API rate limit or quota exceeded (RESOURCE_EXHAUSTED / 429).")
 
     return None
 
@@ -86,7 +121,10 @@ def call_gemini_vision(image_bytes: bytes, mime_type: str, prompt: str, system_i
         config.system_instruction = system_instruction
     config.temperature = 0.3
 
-    for model_name in MODEL_CANDIDATES:
+    models = get_model_candidates()
+    rate_limit_hit = False
+
+    for model_name in models:
         try:
             response = client.models.generate_content(
                 model=model_name,
@@ -94,10 +132,18 @@ def call_gemini_vision(image_bytes: bytes, mime_type: str, prompt: str, system_i
                 config=config,
             )
             if response and response.text:
+                logger.info(f"Gemini vision answered successfully using model '{model_name}'")
                 return response.text.strip()
         except Exception as e:
-            logger.warning(f"Error calling vision on {model_name}: {e}")
+            if is_rate_limit_error(e):
+                rate_limit_hit = True
+                logger.warning(f"Rate limit / quota exhausted on vision model '{model_name}': {e}")
+            else:
+                logger.warning(f"Error calling vision on {model_name}: {e}")
             continue
+
+    if rate_limit_hit:
+        raise GeminiRateLimitError("Gemini API rate limit or quota exceeded (RESOURCE_EXHAUSTED / 429).")
 
     return None
 
@@ -111,10 +157,11 @@ def generate_chat_reply(
     history: Optional[List[Dict[str, str]]] = None,
     language: str = "hi",
     messages: Optional[List[Dict[str, str]]] = None,
-) -> str:
+) -> Dict[str, str]:
     """
     Answers farmer queries strictly on agriculture topics with safety checks.
     Supports either (message, history) or legacy (messages) list.
+    Returns {"text": str, "source": "ai" | "fallback"}.
     """
     lang_name = "Hindi (हिंदी)" if language == "hi" else "English"
 
@@ -168,7 +215,7 @@ def generate_chat_reply(
 
     result = call_gemini_text(full_prompt, system_instruction=system_prompt)
     if result:
-        return result
+        return {"text": result, "source": "ai"}
 
     # Smart domain fallback when API key is unavailable or quota exhausted
     latest_msg = ""
@@ -185,16 +232,18 @@ def generate_chat_reply(
     ]
     if any(k in latest_msg for k in non_farming_keywords):
         if language == "hi":
-            return (
-                "🙏 क्षमा करें, मैं केवल खेती-बाड़ी, फसल, मौसम, खाद और कृषि संबंधित सवालों में ही सहायता कर सकता हूँ। कृपया खेती से जुड़ा कोई सवाल पूछें।"
-            )
+            return {
+                "text": "🙏 क्षमा करें, मैं केवल खेती-बाड़ी, फसल, मौसम, खाद और कृषि संबंधित सवालों में ही सहायता कर सकता हूँ। कृपया खेती से जुड़ा कोई सवाल पूछें।",
+                "source": "fallback",
+            }
         else:
-            return (
-                "🙏 I am sorry, I am KisanMitra AI and I only answer farming and agriculture-related questions (crops, soil, weather, pests, fertilizers). Please ask a farming query."
-            )
+            return {
+                "text": "🙏 I am sorry, I am KisanMitra AI and I only answer farming and agriculture-related questions (crops, soil, weather, pests, fertilizers). Please ask a farming query.",
+                "source": "fallback",
+            }
     if language == "hi":
         if any(w in latest_msg for w in ["खाद", "यूरिया", "dap", "उर्वरक"]):
-            return (
+            fallback_text = (
                 "🌱 **खाद व उर्वरक सलाह (KisanMitra)**:\n\n"
                 "• बुवाई के समय संतुलित मात्रा में NPK या DAP का प्रयोग करें।\n"
                 "• रासायनिक खाद के साथ प्रति एकड़ 4-5 ट्रॉली अच्छी तरह सड़ी गोबर की खाद अवश्य मिलाएं।\n"
@@ -202,21 +251,21 @@ def generate_chat_reply(
                 "⚠️ *सलाह:* कीटनाशक या रासायनिक खाद छिड़कते समय मास्क और दस्ताने अवश्य पहनें।"
             )
         elif any(w in latest_msg for w in ["पानी", "सिंचाई", "irrigation"]):
-            return (
+            fallback_text = (
                 "💧 **सिंचाई प्रबंधन सलाह**:\n\n"
                 "• हमेशा सुबह या शाम के समय ही सिंचाई करें ताकि पानी का वाष्पीकरण कम हो।\n"
                 "• यदि बारिश की संभावना हो तो सिंचाई 2-3 दिन टालें।\n"
                 "• टपक (ड्रिप) या फव्वारा सिंचाई से पानी और बिजली दोनों की भारी बचत होती है।"
             )
         else:
-            return (
+            fallback_text = (
                 "नमस्ते किसान भाई! 🙏 मैं किसानमित्र एआई हूँ।\n\n"
                 "• आपके सवाल का जवाब तैयार किया जा रहा है।\n"
                 "• कृपया अपनी फसल का नाम, मिट्टी का प्रकार और बुवाई का समय विस्तार से बताएं।\n"
                 "• किसी भी गंभीर समस्या के लिए अपने नजदीकी कृषि विज्ञान केंद्र (KVK) से संपर्क करें।"
             )
     else:
-        return (
+        fallback_text = (
             "Hello Farmer friend! 🙏 I am KisanMitra AI, your farming assistant.\n\n"
             "• For best crop growth, ensure proper soil testing and balanced NPK fertilizer application.\n"
             "• Irrigate during early morning or evening hours to conserve moisture.\n"
@@ -224,14 +273,17 @@ def generate_chat_reply(
             "⚠️ *Safety Warning:* Always wear protective gloves and a face mask when spraying crop chemicals."
         )
 
+    return {"text": fallback_text, "source": "fallback"}
+
 
 # =====================================================================
 # 2. Crop Advice
 # =====================================================================
 
-def generate_crop_advice(crop: str, season: str, soil: str = "", question: str = "", language: str = "hi") -> str:
+def generate_crop_advice(crop: str, season: str, soil: str = "", question: str = "", language: str = "hi") -> Dict[str, str]:
     """
     Generates structured crop advisory: sowing, irrigation, care, problems, and fertilizers.
+    Returns {"text": str, "source": "ai" | "fallback"}.
     """
     lang_name = "Hindi (हिंदी)" if language == "hi" else "English"
 
@@ -260,11 +312,11 @@ def generate_crop_advice(crop: str, season: str, soil: str = "", question: str =
 
     result = call_gemini_text(prompt, system_instruction=system_prompt)
     if result:
-        return result
+        return {"text": result, "source": "ai"}
 
     # Offline / Fallback advisory
     if language == "hi":
-        return f"""### 🌾 {crop} की संपूर्ण कृषि सलाह ({season} मौसम)
+        fallback_text = f"""### 🌾 {crop} की संपूर्ण कृषि सलाह ({season} मौसम)
 
 📅 **1. बुवाई का समय और बीज उपचार:**
 • {season} मौसम में तापमान अनुकूल होने पर बुवाई करें।
@@ -290,7 +342,7 @@ def generate_crop_advice(crop: str, season: str, soil: str = "", question: str =
 
 ⚠️ *सुरक्षा चेतावनी:* कीटनाशक का छिड़काव करते समय हमेशा मुंह पर मास्क व हाथों में दस्ताने पहनें और हवा की दिशा में ही स्प्रे करें।"""
     else:
-        return f"""### 🌾 Complete Farming Guide for {crop} ({season} Season)
+        fallback_text = f"""### 🌾 Complete Farming Guide for {crop} ({season} Season)
 
 📅 **1. When to Sow & Seed Treatment:**
 • Sow at the recommended optimal temperature for {season} season.
@@ -316,14 +368,17 @@ def generate_crop_advice(crop: str, season: str, soil: str = "", question: str =
 
 ⚠️ *Safety Advisory:* Always wear face masks and protective gloves when applying agricultural sprays and keep away from children."""
 
+    return {"text": fallback_text, "source": "fallback"}
+
 
 # =====================================================================
 # 3. Weather-based Farming Tips
 # =====================================================================
 
-def generate_weather_tip(weather_data: Dict[str, Any], language: str = "hi") -> str:
+def generate_weather_tip(weather_data: Dict[str, Any], language: str = "hi") -> Dict[str, str]:
     """
     Analyzes weather indicators (temp, humidity, rain chance, wind) and produces actionable farming advisory.
+    Returns {"text": str, "source": "ai" | "fallback"}.
     """
     lang_name = "Hindi (हिंदी)" if language == "hi" else "English"
 
@@ -352,7 +407,7 @@ def generate_weather_tip(weather_data: Dict[str, Any], language: str = "hi") -> 
 
     result = call_gemini_text(prompt, system_instruction=system_prompt)
     if result:
-        return result
+        return {"text": result, "source": "ai"}
 
     # Weather heuristic fallback
     rain_val = int(rain_prob) if str(rain_prob).isdigit() else 0
@@ -360,21 +415,21 @@ def generate_weather_tip(weather_data: Dict[str, Any], language: str = "hi") -> 
 
     if language == "hi":
         if rain_val > 40:
-            return (
+            fallback_text = (
                 "🌧️ **मौसम आधारित कृषि सलाह (KisanMitra):**\n\n"
                 "• **सिंचाई रोकें:** बारिश की संभावना अधिक है, इसलिए आज खेतों में सिंचाई न करें। इससे पानी और लागत दोनों की बचत होगी।\n"
                 "• **छिड़काव न करें:** बारिश के कारण किसी भी कीटनाशक या खाद का पर्णीय छिड़काव न करें, दवा धुल सकती है।\n"
                 "• **जल निकासी:** खेत में जलभराव की स्थिति से बचने के लिए मेड़ और नालियां साफ रखें।"
             )
         elif wind_val > 20:
-            return (
+            fallback_text = (
                 "💨 **मौसम आधारित कृषि सलाह (KisanMitra):**\n\n"
                 "• **छिड़काव स्थगित रखें:** हवा की गति तेज होने से कीटनाशक का बहाव लक्ष्य से भटक सकता है, छिड़काव शांत मौसम में करें।\n"
                 "• **लंबी फसलों को सहारा दें:** मक्का, गन्ना व केले जैसी फसलों की मेड़बंदी मजबूत करें।\n"
                 "• **सिंचाई:** हल्की सिंचाई शाम के समय करें।"
             )
         else:
-            return (
+            fallback_text = (
                 "☀️ **मौसम आधारित कृषि सलाह (KisanMitra):**\n\n"
                 "• **सिंचाई के लिए अनुकूल दिन:** मौसम साफ है, आवश्यकतानुसार फसलों में हल्की सिंचाई कर सकते हैं।\n"
                 "• **दवा व खाद का छिड़काव:** सुबह 8-11 बजे या शाम 4 बजे के बाद कीटनाशक/उर्वरक छिड़काव के लिए मौसम उपयुक्त है।\n"
@@ -382,42 +437,53 @@ def generate_weather_tip(weather_data: Dict[str, Any], language: str = "hi") -> 
             )
     else:
         if rain_val > 40:
-            return (
+            fallback_text = (
                 "🌧️ **Weather-Based Agro Advisory (KisanMitra):**\n\n"
                 "• **Postpone Irrigation:** High chance of rain. Pause irrigation today to save water and prevent soil saturation.\n"
                 "• **Avoid Chemical Spraying:** Do not spray pesticides or foliar fertilizers as rain will wash them away.\n"
                 "• **Drainage:** Keep field channels and bunds clear to prevent stagnant waterlogging."
             )
         elif wind_val > 20:
-            return (
+            fallback_text = (
                 "💨 **Weather-Based Agro Advisory (KisanMitra):**\n\n"
                 "• **Pause Spray Operations:** High wind speed causes chemical drift; avoid pesticide spraying today.\n"
                 "• **Support Tall Crops:** Check lodging protection for tall crops like sugarcane, maize, and banana.\n"
                 "• **Moisture Check:** Moderate soil drying; water crops during calm evening hours."
             )
         else:
-            return (
+            fallback_text = (
                 "☀️ **Weather-Based Agro Advisory (KisanMitra):**\n\n"
                 "• **Favorable Conditions:** Clear weather. Proceed with normal irrigation and inter-cultivation activities.\n"
                 "• **Spraying Window:** Weather is suitable for bio-pesticide or micronutrient sprays during early morning or late afternoon.\n"
                 "• **Weed Removal:** Good sunlight allows pulled weeds to desiccate quickly."
             )
 
+    return {"text": fallback_text, "source": "fallback"}
+
 
 # =====================================================================
 # 4. Plant Health / Disease Diagnosis (Vision)
 # =====================================================================
 
-def generate_plant_diagnosis(image_bytes: bytes, mime_type: str, language: str = "hi") -> str:
+def generate_plant_diagnosis(
+    image_bytes: bytes,
+    mime_type: str,
+    language: str = "hi",
+    crop: str = "",
+) -> Dict[str, str]:
     """
     Analyzes crop image using Gemini Vision for disease, pest, or nutrient deficiencies.
     Returns probable problem, symptoms, treatment (organic + chemical), and prevention.
+    Returns {"text": str, "source": "ai"} on success or {"text": "", "source": "fallback"} on failure.
+    NEVER returns a fake diagnostic report.
     """
     lang_name = "Hindi (हिंदी)" if language == "hi" else "English"
 
+    crop_context = f"\nThe farmer says this is a {crop} plant." if crop else ""
+
     prompt = (
         f"You are KisanMitra AI, an agricultural plant pathologist. "
-        f"Carefully examine this plant / leaf / crop photo and provide a structured diagnosis in {lang_name}.\n\n"
+        f"Carefully examine this plant / leaf / crop photo and provide a structured diagnosis in {lang_name}.{crop_context}\n\n"
         f"Structure your response exactly with these 4 sections:\n"
         f"1. 🔍 **संभावित समस्या / Probable Problem:** (Identify the disease, pest attack, or nutrient deficiency)\n"
         f"2. 📋 **पहचान और लक्षण / Symptoms Explained:** (Describe what visual symptoms appear on leaves/stem)\n"
@@ -436,48 +502,7 @@ def generate_plant_diagnosis(image_bytes: bytes, mime_type: str, language: str =
 
     result = call_gemini_vision(image_bytes, mime_type, prompt, system_instruction=system_prompt)
     if result:
-        return result
+        return {"text": result, "source": "ai"}
 
-    # Intelligent diagnostic fallback for demo when vision API key is absent or quota limited
-    if language == "hi":
-        return """🔍 **संभावित समस्या (Probable Problem):**
-पत्तियों पर फफूंद जनित धब्बा रोग (Leaf Spot / Blight) अथवा रस चूसक कीटों का प्रारंभिक प्रकोप प्रतीत होता है।
-
-📋 **पहचान और लक्षण (Symptoms):**
-• पत्तियों पर भूरे या पीले रंग के गोल/अनियमित धब्बे दिखते हैं।
-• रोग बढ़ने पर पत्तियां पीली पड़कर सूखने लगती हैं और प्रकाश संश्लेषण कमजोर हो जाता है।
-
-💊 **उपचार और समाधान (Treatment):**
-• **जैविक उपचार:** 
-  - 5 मिलीलीटर नीम का तेल (Neem Oil) प्रति लीटर पानी में मिलाकर 7 दिन के अंतराल पर छिड़कें।
-  - ट्राइकोडर्मा विरिडी (Trichoderma viride) 5 ग्राम प्रति लीटर पानी का छिड़काव फफूंद रोकने में असरदार है।
-• **रासायनिक उपचार (सावधानी के साथ):** 
-  - मैंकोजेब (Mancozeb 75% WP) 2 ग्राम प्रति लीटर पानी अथवा कॉपर ऑक्सीक्लोराइड 2.5 ग्राम प्रति लीटर पानी में घोलकर छिड़कें।
-
-🛡️ **रोकथाम के उपाय (Prevention Tips):**
-• खेत में जल निकासी की अच्छी व्यवस्था रखें।
-• रोगग्रस्त पत्तियों को तोड़कर खेत से दूर नष्ट कर दें।
-• अगली फसल में फसल चक्र (Crop Rotation) अपनाएं।
-
-⚠️ **अस्वीकरण (Disclaimer):** यह एक एआई सुझाव है, कोई पक्का लैब निदान नहीं। गंभीर समस्या होने पर अपने नजदीकी कृषि विशेषज्ञ या कृषि विज्ञान केंद्र (KVK) से सलाह लें।"""
-    else:
-        return """🔍 **Probable Problem:**
-Visual indications suggest Fungal Leaf Spot / Early Blight or initial infestation of sucking pests.
-
-📋 **Symptoms Explained:**
-• Irregular brown or yellow chlorotic spots visible on leaf surfaces.
-• Affected leaf tissue begins drying out, reducing photosynthetic capacity and crop vigor.
-
-💊 **Recommended Treatment:**
-• **Organic / Eco-Friendly:**
-  - Spray pure Neem Oil (5ml per liter of water with mild soap emulsifier) every 7-10 days.
-  - Foliar spray of bio-fungicide Trichoderma viride (5g per liter).
-• **Chemical (Use with safety gear):**
-  - Mancozeb 75% WP @ 2g/liter of water or Copper Oxychloride @ 2.5g/liter.
-
-🛡️ **Prevention Tips:**
-• Avoid overhead sprinkling that keeps foliage wet for long periods.
-• Remove and safely dispose of heavily infected leaves.
-• Practice balanced crop nutrition avoiding excessive nitrogen.
-
-⚠️ **Disclaimer:** This is an AI suggestion, not a confirmed laboratory diagnosis. Consult a local agriculture extension officer or Krishi Vigyan Kendra for severe infestations."""
+    # NEVER return a fake diagnosis if AI vision fails
+    return {"text": "", "source": "fallback"}

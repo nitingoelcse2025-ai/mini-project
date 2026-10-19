@@ -66,7 +66,7 @@ const History = () => {
       });
       setHistoryList(response.data.history || []);
     } catch (err) {
-      setError(getErrorMessage(err, 'Failed to fetch query history.'));
+      setError(getErrorMessage(err, t('common.default_error')));
     } finally {
       setLoading(false);
     }
@@ -90,7 +90,7 @@ const History = () => {
 
   const handleDelete = async (id, e) => {
     e.stopPropagation();
-    if (!window.confirm('Do you want to delete this query record? / क्या आप यह रिकॉर्ड हटाना चाहते हैं?')) {
+    if (!window.confirm(t('history.delete_confirm'))) {
       return;
     }
 
@@ -99,7 +99,7 @@ const History = () => {
       await apiClient.delete(`/api/history/${id}`);
       setHistoryList((prev) => prev.filter((item) => item.id !== id));
     } catch (err) {
-      setError(getErrorMessage(err, 'Failed to delete record.'));
+      setError(getErrorMessage(err, t('common.default_error')));
     } finally {
       setDeletingId(null);
     }

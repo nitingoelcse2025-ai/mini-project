@@ -3,32 +3,128 @@ import apiClient, { getErrorMessage } from '../api/client';
 import { useLanguage } from '../context/LanguageContext';
 import ChatBubble from '../components/ChatBubble';
 import ErrorMessage from '../components/ErrorMessage';
-import { Send, Sparkles, Trash2, ShieldAlert } from 'lucide-react';
+import { Send, Trash2, ShieldAlert, Mic, MicOff } from 'lucide-react';
+
+const CHAT_STORAGE_KEY = 'kisanmitra_chat';
 
 const Chat = () => {
   const { t, language } = useLanguage();
-  const [messages, setMessages] = useState([]);
-  const [inputMessage, setInputMessage] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
-  const messagesEndRef = useRef(null);
-  const inputRef = useRef(null);
-
-  // Initialize welcome message when language changes or first load
-  useEffect(() => {
-    setMessages([
+  const [messages, setMessages] = useState(() => {
+    try {
+      const saved = localStorage.getItem(CHAT_STORAGE_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed;
+        }
+      }
+    } catch (e) {
+      console.warn('Failed to parse chat from localStorage:', e);
+    }
+    return [
       {
         role: 'assistant',
         content: t('chat.welcome_msg'),
         id: 'welcome-init',
       },
-    ]);
-  }, [language]);
+    ];
+  });
+
+  const [inputMessage, setInputMessage] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [isListening, setIsListening] = useState(false);
+
+  const messagesEndRef = useRef(null);
+  const inputRef = useRef(null);
+  const recognitionRef = useRef(null);
+
+  // Feature detection for Web Speech API
+  const SpeechRecognition = typeof window !== 'undefined'
+    ? (window.SpeechRecognition || window.webkitSpeechRecognition)
+    : null;
+  const isSpeechSupported = !!SpeechRecognition;
+
+  // Persist conversation to localStorage
+  useEffect(() => {
+    try {
+      if (messages && messages.length > 0) {
+        localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(messages));
+      }
+    } catch (e) {
+      console.warn('Failed to save chat to localStorage:', e);
+    }
+  }, [messages]);
+
+  // If conversation is completely empty, initialize with welcome message
+  useEffect(() => {
+    if (messages.length === 0) {
+      setMessages([
+        {
+          role: 'assistant',
+          content: t('chat.welcome_msg'),
+          id: 'welcome-init',
+        },
+      ]);
+    }
+  }, [messages.length, t]);
 
   // Auto-scroll on new message
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, loading]);
+
+  // Clean up speech recognition on unmount
+  useEffect(() => {
+    return () => {
+      if (recognitionRef.current) {
+        recognitionRef.current.abort();
+      }
+    };
+  }, []);
+
+  const toggleVoiceInput = () => {
+    if (!isSpeechSupported) return;
+
+    if (isListening) {
+      recognitionRef.current?.stop();
+      setIsListening(false);
+      return;
+    }
+
+    try {
+      const recognition = new SpeechRecognition();
+      recognition.lang = language === 'hi' ? 'hi-IN' : 'en-IN';
+      recognition.interimResults = false;
+      recognition.continuous = false;
+
+      recognition.onstart = () => {
+        setIsListening(true);
+      };
+
+      recognition.onresult = (event) => {
+        const transcript = event.results[0]?.[0]?.transcript || '';
+        if (transcript) {
+          setInputMessage((prev) => (prev ? `${prev} ${transcript}` : transcript));
+        }
+      };
+
+      recognition.onerror = (event) => {
+        console.warn('Speech recognition error:', event.error);
+        setIsListening(false);
+      };
+
+      recognition.onend = () => {
+        setIsListening(false);
+      };
+
+      recognitionRef.current = recognition;
+      recognition.start();
+    } catch (err) {
+      console.error('Speech recognition exception:', err);
+      setIsListening(false);
+    }
+  };
 
   const handleSendMessage = async (textToSend) => {
     const text = (textToSend || inputMessage).trim();
@@ -47,8 +143,8 @@ const Chat = () => {
     setLoading(true);
 
     try {
-      // Send message history formatted for backend
-      const payloadMessages = newMessages.map((m) => ({
+      // Limit the messages sent to the backend to the last 10
+      const payloadMessages = newMessages.slice(-10).map((m) => ({
         role: m.role,
         content: m.content,
       }));
@@ -61,11 +157,12 @@ const Chat = () => {
       const assistantMsg = {
         role: 'assistant',
         content: response.data.reply,
+        source: response.data.source || 'ai',
         id: (Date.now() + 1).toString(),
       };
       setMessages((prev) => [...prev, assistantMsg]);
     } catch (err) {
-      setError(getErrorMessage(err, 'Failed to get answer. Please try again.'));
+      setError(getErrorMessage(err, t('common.default_error')));
     } finally {
       setLoading(false);
       setTimeout(() => inputRef.current?.focus(), 100);
@@ -73,11 +170,12 @@ const Chat = () => {
   };
 
   const handleClearChat = () => {
+    localStorage.removeItem(CHAT_STORAGE_KEY);
     setMessages([
       {
         role: 'assistant',
         content: t('chat.welcome_msg'),
-        id: 'welcome-reset',
+        id: 'welcome-reset-' + Date.now(),
       },
     ]);
     setError('');
@@ -105,11 +203,11 @@ const Chat = () => {
         <button
           onClick={handleClearChat}
           type="button"
-          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-stone-100 hover:bg-red-50 text-stone-600 hover:text-red-700 text-xs sm:text-sm font-bold transition-colors"
-          title="Clear Conversation"
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-stone-100 hover:bg-red-50 text-stone-600 hover:text-red-700 text-xs sm:text-sm font-bold transition-colors cursor-pointer"
+          title={t('chat.clear_tooltip')}
         >
           <Trash2 className="w-4 h-4" />
-          <span className="hidden sm:inline">Clear</span>
+          <span className="hidden sm:inline">{t('chat.clear')}</span>
         </button>
       </div>
 
@@ -173,10 +271,28 @@ const Chat = () => {
             type="text"
             value={inputMessage}
             onChange={(e) => setInputMessage(e.target.value)}
-            placeholder={t('chat.placeholder')}
+            placeholder={isListening ? t('chat.voice_listening') : t('chat.placeholder')}
             disabled={loading}
             className="flex-1 text-base sm:text-lg px-4 py-2 outline-none font-medium bg-transparent text-stone-900"
           />
+
+          {/* Voice Input Button (Feature-detected) */}
+          {isSpeechSupported && (
+            <button
+              type="button"
+              onClick={toggleVoiceInput}
+              disabled={loading}
+              className={`h-11 w-11 rounded-2xl flex items-center justify-center transition-all cursor-pointer ${
+                isListening
+                  ? 'bg-red-500 hover:bg-red-600 text-white animate-pulse shadow-md'
+                  : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800'
+              }`}
+              title={isListening ? t('chat.voice_stop') : t('chat.voice_start')}
+              aria-label={isListening ? t('chat.voice_stop') : t('chat.voice_start')}
+            >
+              {isListening ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
+            </button>
+          )}
 
           <button
             type="submit"

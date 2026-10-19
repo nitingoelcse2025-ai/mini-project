@@ -24,7 +24,7 @@ const Home = () => {
       icon: Sprout,
       color: 'bg-emerald-600',
       lightBg: 'bg-emerald-50 hover:bg-emerald-100/70 border-emerald-200',
-      badge: '🌾 फसल सलाह',
+      badge: t('home.badge_crop'),
     },
     {
       to: '/weather',
@@ -33,7 +33,7 @@ const Home = () => {
       icon: CloudSun,
       color: 'bg-sky-600',
       lightBg: 'bg-sky-50 hover:bg-sky-100/70 border-sky-200',
-      badge: '🌦️ मौसम रिपोर्ट',
+      badge: t('home.badge_weather'),
     },
     {
       to: '/chat',
@@ -42,7 +42,7 @@ const Home = () => {
       icon: MessageSquareText,
       color: 'bg-amber-600',
       lightBg: 'bg-amber-50 hover:bg-amber-100/70 border-amber-200',
-      badge: '💬 किसान सहायक',
+      badge: t('home.badge_chat'),
     },
     {
       to: '/plant',
@@ -51,7 +51,7 @@ const Home = () => {
       icon: ScanEye,
       color: 'bg-teal-600',
       lightBg: 'bg-teal-50 hover:bg-teal-100/70 border-teal-200',
-      badge: '🌿 रोग निदान',
+      badge: t('home.badge_plant'),
     },
     {
       to: '/history',
@@ -60,7 +60,7 @@ const Home = () => {
       icon: History,
       color: 'bg-stone-700',
       lightBg: 'bg-stone-100 hover:bg-stone-200/70 border-stone-300',
-      badge: '📜 पिछला रिकॉर्ड',
+      badge: t('home.badge_history'),
     },
   ];
 
@@ -109,10 +109,10 @@ const Home = () => {
       <section className="space-y-5">
         <div className="flex items-center justify-between">
           <h2 className="text-2xl sm:text-3xl font-extrabold text-stone-900">
-            मुख्य सुविधाएं (Main Features)
+            {t('home.main_features_title')}
           </h2>
           <span className="text-sm font-semibold text-stone-500 hidden sm:inline">
-            5 Simple Tools
+            {t('home.main_features_subtitle')}
           </span>
         </div>
 
@@ -147,7 +147,7 @@ const Home = () => {
                 </div>
 
                 <div className="pt-5 flex items-center gap-2 text-sm sm:text-base font-extrabold text-stone-900 group-hover:text-emerald-700">
-                  <span>शुरू करें (Open)</span>
+                  <span>{t('home.open_feature')}</span>
                   <ArrowRight className="w-4 h-4 group-hover:translate-x-1.5 transition-transform" />
                 </div>
               </Link>
@@ -191,12 +191,12 @@ const Home = () => {
           <div className="flex items-center gap-3">
             <PhoneCall className="w-6 h-6 text-amber-700 flex-shrink-0" />
             <div>
-              <span className="font-extrabold text-base">किसान कॉल सेंटर (Kisan Call Centre): </span>
-              <span className="font-bold text-lg text-amber-900">1800-180-1551 (Toll-Free)</span>
+              <span className="font-extrabold text-base">{t('home.kcc_title')}: </span>
+              <span className="font-bold text-lg text-amber-900">1800-180-1551 ({t('home.toll_free')})</span>
             </div>
           </div>
           <span className="text-xs font-bold text-amber-800 bg-amber-200/60 px-3 py-1 rounded-full">
-            सरकारी हेल्पलाइन (Govt 24x7)
+            {t('home.govt_helpline')}
           </span>
         </div>
       </section>

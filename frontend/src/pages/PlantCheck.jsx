@@ -87,7 +87,7 @@ const PlantCheck = () => {
       });
       setResult(response.data);
     } catch (err) {
-      setError(getErrorMessage(err, 'Failed to diagnose plant image. Please try again.'));
+      setError(getErrorMessage(err, t('common.default_error')));
     } finally {
       setLoading(false);
     }
@@ -137,10 +137,10 @@ const PlantCheck = () => {
             <button
               onClick={handleCopy}
               type="button"
-              className="inline-flex items-center gap-1.5 px-4 py-2 bg-stone-100 hover:bg-emerald-50 text-stone-800 hover:text-emerald-800 rounded-xl font-bold text-sm transition-colors border border-stone-200"
+              className="inline-flex items-center gap-1.5 px-4 py-2 bg-stone-100 hover:bg-emerald-50 text-stone-800 hover:text-emerald-800 rounded-xl font-bold text-sm transition-colors border border-stone-200 cursor-pointer"
             >
               {copied ? <Check className="w-4 h-4 text-emerald-600" /> : <Copy className="w-4 h-4" />}
-              <span>{copied ? t('common.copied') : 'Copy'}</span>
+              <span>{copied ? t('common.copied') : t('common.copy')}</span>
             </button>
           </div>
 
