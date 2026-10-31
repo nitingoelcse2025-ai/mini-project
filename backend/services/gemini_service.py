@@ -10,18 +10,21 @@ Includes reliable fallback responses for college presentations and offline testi
 """
 
 import os
+import sys
 import json
 import re
 import logging
 from typing import List, Dict, Any, Optional, Union, Tuple
 from dotenv import load_dotenv
 
-# Load environment variables
-load_dotenv()
+# Load environment variables from explicit absolute path
+BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+load_dotenv(dotenv_path=os.path.join(BACKEND_DIR, ".env"))
 
 logger = logging.getLogger(__name__)
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+_last_gemini_error_reason = "service_unavailable"
 
 
 class GeminiRateLimitError(Exception):
@@ -32,12 +35,16 @@ class GeminiRateLimitError(Exception):
 def get_model_candidates() -> List[str]:
     """
     Returns candidate models in priority order.
-    Configured via GEMINI_MODEL (default: gemini-2.5-flash) and optional GEMINI_FALLBACK_MODELS.
+    Configured via GEMINI_MODEL (default: gemini-3.8-flash) and optional GEMINI_FALLBACK_MODELS.
+    Ensures resilient fallback across active models (gemini-3.8-flash, gemini-3-flash-preview).
     """
-    primary = os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip() or "gemini-2.5-flash"
-    fallback_str = os.getenv("GEMINI_FALLBACK_MODELS", "").strip()
+    primary = os.getenv("GEMINI_MODEL", "gemini-3.8-flash").strip() or "gemini-3.8-flash"
+    fallback_str = os.getenv("GEMINI_FALLBACK_MODELS", "gemini-3-flash-preview,gemini-2.5-flash").strip()
     fallbacks = [m.strip() for m in fallback_str.split(",") if m.strip()]
     candidates = [primary] + [m for m in fallbacks if m != primary]
+    for backup in ["gemini-3.8-flash", "gemini-3-flash-preview"]:
+        if backup not in candidates:
+            candidates.append(backup)
     return candidates
 
 
@@ -51,6 +58,36 @@ def is_rate_limit_error(e: Exception) -> bool:
     return False
 
 
+def categorize_gemini_error(e: Exception) -> Tuple[str, str]:
+    """
+    Categorizes a Gemini API exception into (reason_type, clean_description).
+    Reason types: 'quota', 'model not found', 'invalid key', 'network', 'service unavailable', 'unknown'.
+    Guarantees that the secret API key is NEVER exposed in logs.
+    """
+    raw_str = str(e)
+    # Strip any potential API key from error string
+    api_key = os.getenv("GEMINI_API_KEY", "").strip()
+    if api_key and api_key in raw_str:
+        raw_str = raw_str.replace(api_key, "[REDACTED]")
+
+    err_upper = raw_str.upper()
+
+    if "429" in err_upper or "RESOURCE_EXHAUSTED" in err_upper or "QUOTA" in err_upper or "RATE_LIMIT" in err_upper:
+        return "quota", "Quota or rate limit exhausted"
+    elif "503" in err_upper or "UNAVAILABLE" in err_upper or "HIGH DEMAND" in err_upper:
+        return "service unavailable", "Service temporarily experiencing high demand"
+    elif "504" in err_upper or "DEADLINE" in err_upper or "TIMEOUT" in err_upper:
+        return "network", "Deadline exceeded / network timeout"
+    elif "404" in err_upper or "NOT_FOUND" in err_upper or "NOT FOUND" in err_upper or "NO LONGER AVAILABLE" in err_upper:
+        return "model not found", "Model not found or unsupported"
+    elif "400" in err_upper or "401" in err_upper or "403" in err_upper or "API_KEY" in err_upper or "UNAUTHENTICATED" in err_upper or "PERMISSION" in err_upper:
+        return "invalid key", "Invalid API key or unauthorized access"
+    elif "CONNECTION" in err_upper or "NETWORK" in err_upper or "DNS" in err_upper:
+        return "network", "Network connection or DNS error"
+    else:
+        return "unknown", raw_str[:120]
+
+
 def get_gemini_client():
     """Initializes and returns the Gemini client if API key is present."""
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
@@ -58,16 +95,27 @@ def get_gemini_client():
         return None
     try:
         from google import genai
-        return genai.Client(api_key=api_key)
+        from google.genai import types
+        http_options = types.HttpOptions(
+            timeout=15000,
+            retry_options=types.HttpRetryOptions(attempts=2)
+        )
+        return genai.Client(api_key=api_key, http_options=http_options)
     except Exception as e:
+        reason_type, desc = categorize_gemini_error(e)
+        sys.stderr.write(f"[Gemini Error] Model: None | Reason: {reason_type} ({desc})\n")
         logger.error(f"Failed to initialize Gemini client: {e}")
         return None
 
 
 def call_gemini_text(prompt: str, system_instruction: Optional[str] = None) -> Optional[str]:
     """Helper to invoke Gemini text generation across candidate models."""
+    global _last_gemini_error_reason
     client = get_gemini_client()
     if not client:
+        _last_gemini_error_reason = "key_missing"
+        sys.stderr.write("[Gemini Error] Model: None | Reason: invalid key (missing or placeholder)\n")
+        logger.warning("Gemini text call skipped: API key missing or invalid.")
         return None
 
     from google.genai import types
@@ -92,11 +140,18 @@ def call_gemini_text(prompt: str, system_instruction: Optional[str] = None) -> O
                 logger.info(f"Gemini text answered successfully using model '{model_name}'")
                 return response.text.strip()
         except Exception as e:
-            if is_rate_limit_error(e):
+            reason_type, clean_desc = categorize_gemini_error(e)
+            sys.stderr.write(f"[Gemini Error] Model: {model_name} | Reason: {reason_type} ({clean_desc})\n")
+            logger.warning(f"Gemini call failed for model '{model_name}': {reason_type} - {clean_desc}")
+            if reason_type == "quota":
                 rate_limit_hit = True
-                logger.warning(f"Rate limit / quota exhausted on model '{model_name}': {e}")
+                _last_gemini_error_reason = "rate_limit"
+            elif reason_type == "invalid key":
+                _last_gemini_error_reason = "key_missing"
+            elif reason_type == "model not found":
+                _last_gemini_error_reason = "model_not_found"
             else:
-                logger.warning(f"Error calling {model_name}: {e}")
+                _last_gemini_error_reason = "service_unavailable"
             continue
 
     if rate_limit_hit:
@@ -109,6 +164,7 @@ def call_gemini_vision(image_bytes: bytes, mime_type: str, prompt: str, system_i
     """Helper to invoke Gemini vision multimodal analysis."""
     client = get_gemini_client()
     if not client:
+        sys.stderr.write("[Gemini Error] Model: None | Reason: invalid key (missing or placeholder)\n")
         return None
 
     from google.genai import types
@@ -135,17 +191,79 @@ def call_gemini_vision(image_bytes: bytes, mime_type: str, prompt: str, system_i
                 logger.info(f"Gemini vision answered successfully using model '{model_name}'")
                 return response.text.strip()
         except Exception as e:
-            if is_rate_limit_error(e):
+            reason_type, clean_desc = categorize_gemini_error(e)
+            sys.stderr.write(f"[Gemini Error] Model: {model_name} | Reason: {reason_type} ({clean_desc})\n")
+            logger.warning(f"Error calling vision on {model_name}: {reason_type} - {clean_desc}")
+            if reason_type == "quota":
                 rate_limit_hit = True
-                logger.warning(f"Rate limit / quota exhausted on vision model '{model_name}': {e}")
-            else:
-                logger.warning(f"Error calling vision on {model_name}: {e}")
             continue
 
     if rate_limit_hit:
         raise GeminiRateLimitError("Gemini API rate limit or quota exceeded (RESOURCE_EXHAUSTED / 429).")
 
     return None
+
+
+def check_ai_status() -> Dict[str, Any]:
+    """
+    Performs a live connectivity test using a minimal Gemini call ('Say OK').
+    NEVER logs or returns the API key. Does not save to database.
+    Returns:
+    {
+        "key_loaded": bool,
+        "model": str,
+        "live_test": "ok" | "failed",
+        "error": str | None
+    }
+    """
+    api_key = os.getenv("GEMINI_API_KEY", "").strip()
+    primary_model = os.getenv("GEMINI_MODEL", "gemini-3.8-flash").strip() or "gemini-3.8-flash"
+
+    if not api_key or api_key == "your_gemini_api_key_here":
+        return {
+            "key_loaded": False,
+            "model": primary_model,
+            "live_test": "failed",
+            "error": "API key not configured"
+        }
+
+    client = get_gemini_client()
+    if not client:
+        return {
+            "key_loaded": True,
+            "model": primary_model,
+            "live_test": "failed",
+            "error": "Failed to initialize Gemini client"
+        }
+
+    models = get_model_candidates()
+    last_err_desc = "API call failed"
+    for m in models:
+        try:
+            res = client.models.generate_content(
+                model=m,
+                contents="Say OK",
+            )
+            if res and res.text:
+                return {
+                    "key_loaded": True,
+                    "model": m,
+                    "live_test": "ok",
+                    "error": None
+                }
+        except Exception as e:
+            reason_type, clean_desc = categorize_gemini_error(e)
+            sys.stderr.write(f"[Gemini Error] Model: {m} | Reason: {reason_type} ({clean_desc})\n")
+            logger.warning(f"AI status live test failed for model '{m}': {reason_type} - {clean_desc}")
+            last_err_desc = clean_desc
+            continue
+
+    return {
+        "key_loaded": True,
+        "model": primary_model,
+        "live_test": "failed",
+        "error": last_err_desc
+    }
 
 
 # =====================================================================
@@ -161,7 +279,7 @@ def generate_chat_reply(
     """
     Answers farmer queries strictly on agriculture topics with safety checks.
     Supports either (message, history) or legacy (messages) list.
-    Returns {"text": str, "source": "ai" | "fallback"}.
+    Returns {"text": str, "source": "ai" | "fallback", "reason": Optional[str]}.
     """
     lang_name = "Hindi (हिंदी)" if language == "hi" else "English"
 
@@ -217,6 +335,13 @@ def generate_chat_reply(
     if result:
         return {"text": result, "source": "ai"}
 
+    # Determine fallback reason
+    api_key = os.getenv("GEMINI_API_KEY", "").strip()
+    if not api_key or api_key == "your_gemini_api_key_here":
+        fallback_reason = "key_missing"
+    else:
+        fallback_reason = _last_gemini_error_reason or "service_unavailable"
+
     # Smart domain fallback when API key is unavailable or quota exhausted
     latest_msg = ""
     for m in reversed(formatted_messages):
@@ -235,11 +360,13 @@ def generate_chat_reply(
             return {
                 "text": "🙏 क्षमा करें, मैं केवल खेती-बाड़ी, फसल, मौसम, खाद और कृषि संबंधित सवालों में ही सहायता कर सकता हूँ। कृपया खेती से जुड़ा कोई सवाल पूछें।",
                 "source": "fallback",
+                "reason": fallback_reason,
             }
         else:
             return {
                 "text": "🙏 I am sorry, I am KisanMitra AI and I only answer farming and agriculture-related questions (crops, soil, weather, pests, fertilizers). Please ask a farming query.",
                 "source": "fallback",
+                "reason": fallback_reason,
             }
     if language == "hi":
         if any(w in latest_msg for w in ["खाद", "यूरिया", "dap", "उर्वरक"]):
@@ -273,7 +400,7 @@ def generate_chat_reply(
             "⚠️ *Safety Warning:* Always wear protective gloves and a face mask when spraying crop chemicals."
         )
 
-    return {"text": fallback_text, "source": "fallback"}
+    return {"text": fallback_text, "source": "fallback", "reason": fallback_reason}
 
 
 # =====================================================================

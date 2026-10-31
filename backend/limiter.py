@@ -2,6 +2,7 @@
 Rate limiting and request validation utilities for KisanMitra AI Backend.
 """
 
+import os
 import time
 import logging
 from collections import defaultdict
@@ -24,10 +25,12 @@ class SimpleRateLimiter:
         self.lock = Lock()
 
     def get_client_ip(self) -> str:
-        # Respect X-Forwarded-For if behind a proxy
-        forwarded = request.headers.get("X-Forwarded-For")
-        if forwarded:
-            return forwarded.split(",")[0].strip()
+        # Only trust X-Forwarded-For if explicitly configured via TRUST_PROXY
+        trust_proxy = os.getenv("TRUST_PROXY", "").strip().lower() in ("true", "1", "yes")
+        if trust_proxy:
+            forwarded = request.headers.get("X-Forwarded-For")
+            if forwarded:
+                return forwarded.split(",")[0].strip()
         return request.remote_addr or "127.0.0.1"
 
     def is_allowed(self, client_ip: str) -> bool:

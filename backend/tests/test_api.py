@@ -289,3 +289,176 @@ def test_history_list_and_delete(client):
     del_404_res = client.delete("/api/history/999999")
     assert del_404_res.status_code == 404
     assert "not found" in del_404_res.get_json()["error"].lower()
+
+
+# =====================================================================
+# 9. Chat: Successful AI Response Saves to History, Fallback Does Not
+# =====================================================================
+
+@patch("routes.chat.generate_chat_reply")
+def test_successful_chat_history_saving(mock_chat, client):
+    """Tests that source 'ai' is saved to history, while 'fallback' is not."""
+    # 1. AI reply -> saved to history
+    mock_chat.return_value = {
+        "text": "Wheat requires balanced irrigation every 20-25 days.",
+        "source": "ai",
+    }
+    res1 = client.post("/api/chat", json={
+        "messages": [{"role": "user", "content": "How often to irrigate wheat?"}],
+        "language": "en",
+    })
+    assert res1.status_code == 200
+    assert res1.get_json()["source"] == "ai"
+    records1 = get_queries(query_type="chat")
+    assert len(records1) == 1
+    assert "How often to irrigate wheat?" in records1[0]["question"]
+
+    # 2. Fallback reply -> NOT saved to history
+    mock_chat.return_value = {
+        "text": "Offline demo response.",
+        "source": "fallback",
+    }
+    res2 = client.post("/api/chat", json={
+        "messages": [{"role": "user", "content": "Tell me about maize sowing"}],
+        "language": "en",
+    })
+    assert res2.status_code == 200
+    assert res2.get_json()["source"] == "fallback"
+    records2 = get_queries(query_type="chat")
+    assert len(records2) == 1  # Count remains 1
+
+
+# =====================================================================
+# 10. Rate Limiter: 21st Request Within 1 Minute Returns 429
+# =====================================================================
+
+@patch("routes.chat.generate_chat_reply")
+def test_rate_limiter_21st_request_returns_429(mock_chat, client):
+    """Tests that the 21st request to an AI endpoint within 60s returns HTTP 429."""
+    mock_chat.return_value = {"text": "Quick answer", "source": "fallback"}
+
+    # First 20 requests succeed
+    for i in range(20):
+        res = client.post("/api/chat", json={
+            "messages": [{"role": "user", "content": f"Query number {i}"}]
+        })
+        assert res.status_code == 200
+
+    # 21st request must be rate-limited with 429
+    res_21 = client.post("/api/chat", json={
+        "messages": [{"role": "user", "content": "Query number 21"}]
+    })
+    assert res_21.status_code == 429
+    data = res_21.get_json()
+    assert "Rate limit exceeded" in data["error"]
+
+
+# =====================================================================
+# 11. Weather: GeminiRateLimitError Yields Fallback Tip & Does Not Save
+# =====================================================================
+
+@patch("routes.weather.geocode_location")
+@patch("routes.weather.fetch_weather")
+@patch("routes.weather.generate_weather_tip")
+def test_weather_tip_gemini_rate_limit_fallback(mock_tip, mock_fetch, mock_geo, client):
+    """Tests that when generate_weather_tip raises GeminiRateLimitError, weather endpoint returns 200 with fallback tip and does not save to history."""
+    from services.gemini_service import GeminiRateLimitError
+
+    mock_geo.return_value = (26.91, 75.78, "Jaipur, Rajasthan, India")
+    mock_fetch.return_value = {
+        "location_name": "Jaipur, Rajasthan, India",
+        "current": {
+            "temperature": 28,
+            "humidity": 50,
+            "wind_speed": 10,
+            "condition": "साफ आसमान",
+            "icon": "sunny",
+        },
+    }
+    mock_tip.side_effect = GeminiRateLimitError("Quota limit hit")
+
+    res = client.get("/api/weather?city=Jaipur&save=true&language=en")
+    assert res.status_code == 200
+    data = res.get_json()
+    assert data["source"] == "fallback"
+    assert "Clear weather" in data["farming_tip"]
+
+    # Must NOT save to history because source is fallback
+    records = get_queries(query_type="weather")
+    assert len(records) == 0
+
+
+# =====================================================================
+# 12. AI Status Check Endpoint (/api/ai-status) Tests
+# =====================================================================
+
+@patch("routes.chat.check_ai_status")
+def test_ai_status_endpoint_ok(mock_check, client):
+    """Tests GET /api/ai-status returns ok live_test and does not save to DB."""
+    # Reset status cache timestamp for test isolation
+    from routes.chat import _status_cache
+    _status_cache["data"] = None
+    _status_cache["timestamp"] = 0.0
+
+    mock_check.return_value = {
+        "key_loaded": True,
+        "model": "gemini-3.8-flash",
+        "live_test": "ok",
+        "error": None,
+    }
+
+    res = client.get("/api/ai-status")
+    assert res.status_code == 200
+    data = res.get_json()
+    assert data["key_loaded"] is True
+    assert data["model"] == "gemini-3.8-flash"
+    assert data["live_test"] == "ok"
+    assert data["error"] is None
+
+    # Verify no database persistence
+    all_queries = get_queries(limit=10)
+    assert len(all_queries) == 0
+
+
+@patch("routes.chat.check_ai_status")
+def test_ai_status_endpoint_failed(mock_check, client):
+    """Tests GET /api/ai-status returns failed when API key is missing or model fails."""
+    from routes.chat import _status_cache
+    _status_cache["data"] = None
+    _status_cache["timestamp"] = 0.0
+
+    mock_check.return_value = {
+        "key_loaded": False,
+        "model": "gemini-3.8-flash",
+        "live_test": "failed",
+        "error": "API key not configured",
+    }
+
+    res = client.get("/api/ai-status")
+    assert res.status_code == 200
+    data = res.get_json()
+    assert data["key_loaded"] is False
+    assert data["live_test"] == "failed"
+    assert "API key" in data["error"]
+
+
+def test_check_ai_status_unit_with_mock_client(monkeypatch):
+    """Unit test for check_ai_status() using mock genai client."""
+    from services.gemini_service import check_ai_status
+    from unittest.mock import MagicMock
+
+    monkeypatch.setenv("GEMINI_API_KEY", "mock_key_for_test")
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-3.8-flash")
+
+    mock_client = MagicMock()
+    mock_resp = MagicMock()
+    mock_resp.text = "OK"
+    mock_client.models.generate_content.return_value = mock_resp
+
+    with patch("services.gemini_service.get_gemini_client", return_value=mock_client):
+        result = check_ai_status()
+        assert result["key_loaded"] is True
+        assert result["live_test"] == "ok"
+        assert result["error"] is None
+        mock_client.models.generate_content.assert_called_once()
+

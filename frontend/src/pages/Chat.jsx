@@ -158,6 +158,7 @@ const Chat = () => {
         role: 'assistant',
         content: response.data.reply,
         source: response.data.source || 'ai',
+        reason: response.data.reason || null,
         id: (Date.now() + 1).toString(),
       };
       setMessages((prev) => [...prev, assistantMsg]);

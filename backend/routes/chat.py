@@ -5,12 +5,42 @@ Handles multi-turn conversational agriculture queries.
 
 import logging
 from flask import Blueprint, request, jsonify
-from services.gemini_service import generate_chat_reply, GeminiRateLimitError
+from threading import Lock
+import time
+from services.gemini_service import generate_chat_reply, GeminiRateLimitError, check_ai_status
+
 from database import save_query
 from limiter import rate_limit_ai, sanitize_language
 
 logger = logging.getLogger(__name__)
 chat_bp = Blueprint("chat", __name__)
+
+_status_cache = {"timestamp": 0.0, "data": None}
+_status_lock = Lock()
+
+
+@chat_bp.route("/api/ai-status", methods=["GET"])
+def ai_status():
+    """
+    Live AI health verification check.
+    Returns JSON:
+    { "key_loaded": true/false, "model": "<model name>", "live_test": "ok" | "failed", "error": "<short reason or null>" }
+    Makes one tiny real Gemini call ("Say OK") to verify connection.
+    NEVER logs or returns the API key. Does not save anything to the database.
+    Throttled/cached for 3 seconds to avoid hammering Gemini and prevent rate limiting.
+    """
+    now = time.time()
+    with _status_lock:
+        if _status_cache["data"] is not None and (now - _status_cache["timestamp"] < 3.0):
+            return jsonify(_status_cache["data"]), 200
+
+    status_data = check_ai_status()
+
+    with _status_lock:
+        _status_cache["timestamp"] = now
+        _status_cache["data"] = status_data
+
+    return jsonify(status_data), 200
 
 
 @chat_bp.route("/api/chat", methods=["POST"])
@@ -47,6 +77,7 @@ def chat():
         reply_dict = generate_chat_reply(messages, language=language)
         reply_text = reply_dict.get("text", "")
         source = reply_dict.get("source", "fallback")
+        reason = reply_dict.get("reason")
 
         # Persist interaction into history ONLY for live AI answers
         if source == "ai":
@@ -57,7 +88,11 @@ def chat():
                 language=language,
             )
 
-        return jsonify({"reply": reply_text, "language": language, "source": source}), 200
+        resp_body = {"reply": reply_text, "language": language, "source": source}
+        if reason:
+            resp_body["reason"] = reason
+
+        return jsonify(resp_body), 200
 
     except GeminiRateLimitError as e:
         logger.warning(f"Chat quota exhausted: {e}")

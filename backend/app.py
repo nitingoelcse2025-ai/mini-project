@@ -9,8 +9,9 @@ from flask import Flask, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
 
-# Load environment configuration
-load_dotenv()
+# Load environment configuration from explicit absolute path
+BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
+load_dotenv(dotenv_path=os.path.join(BACKEND_DIR, ".env"))
 
 # Setup logging
 logging.basicConfig(
@@ -89,7 +90,7 @@ def create_app():
     app.config["MAX_CONTENT_LENGTH"] = 5 * 1024 * 1024
 
     # Restrict CORS to configured origins
-    cors_origins_raw = os.getenv("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173")
+    cors_origins_raw = os.getenv("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174")
     cors_origins = [o.strip() for o in cors_origins_raw.split(",") if o.strip()]
     CORS(app, resources={r"/api/*": {"origins": cors_origins}})
 

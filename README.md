@@ -111,6 +111,7 @@ Configure your backend settings in `backend/.env` (reference `backend/.env.examp
 | `PORT` | `5000` | Backend port number |
 | `FLASK_DEBUG` | `false` | Enable or disable Flask debug mode |
 | `CORS_ORIGINS` | `http://localhost:5173,http://127.0.0.1:5173` | Allowed CORS origins (comma-separated) |
+| `TRUST_PROXY` | `false` | When `true`, rate limiter trusts `X-Forwarded-For`; defaults to `false` (uses `remote_addr`) |
 
 ---
 

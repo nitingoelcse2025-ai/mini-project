@@ -87,7 +87,10 @@ const ChatBubble = ({ message }) => {
         {!isUser && isFallback && (
           <div className="mb-3 px-3 py-1.5 bg-amber-50 border border-amber-300 text-amber-900 rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-xs">
             <AlertTriangle className="w-3.5 h-3.5 text-amber-600 flex-shrink-0" />
-            <span>{t('common.offline_demo_banner')}</span>
+            <span>
+              {t('common.offline_demo_banner')}
+              {message.reason ? ` (${t(`common.reason_${message.reason}`) || message.reason})` : ''}
+            </span>
           </div>
         )}
 

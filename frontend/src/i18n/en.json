@@ -83,7 +83,8 @@
     "my_location": "My Location",
     "empty_state_prompt": "Search for your city or click 'Use My Location' to view today's weather and farming advice.",
     "open_meteo_credit": "📡 Open-Meteo Live API",
-    "geo_error_coords": "Failed to retrieve weather for your coordinates."
+    "geo_error_coords": "Failed to retrieve weather for your coordinates.",
+    "fetch_error_prefix": "Could not retrieve weather data for"
   },
 
   "chat": {
@@ -150,6 +151,10 @@
     "copy": "Copy",
     "copy_answer": "Copy answer",
     "offline_demo_banner": "Offline demo answer – live AI is currently unavailable",
+    "reason_key_missing": "AI key missing",
+    "reason_service_unavailable": "AI service unavailable",
+    "reason_rate_limit": "AI rate limit or quota exceeded",
+    "reason_model_not_found": "AI model unavailable",
     "network_error": "Unable to connect to the backend server. Please verify backend is running on port 5000.",
     "default_error": "Something went wrong. Please try again."
   }

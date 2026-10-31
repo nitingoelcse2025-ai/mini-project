@@ -77,10 +77,11 @@ def get_weather():
     try:
         tip_dict = generate_weather_tip(weather_data, language=language)
     except GeminiRateLimitError as e:
-        logger.warning(f"Weather tip quota exhausted: {e}")
-        return jsonify({
-            "error": "Gemini AI rate limit or quota exceeded. Please try again later. / एआई दर सीमा समाप्त हो गई है, कृपया बाद में पुनः प्रयास करें।"
-        }), 429
+        logger.warning(f"Weather tip quota exhausted, using fallback tip: {e}")
+        tip_dict = {
+            "text": "☀️ मौसम साफ है। कृषि कार्यों के लिए सामान्य सावधानी रखें।" if language == "hi" else "☀️ Clear weather. Proceed with normal farming operations.",
+            "source": "fallback",
+        }
     except Exception as e:
         logger.exception(f"Weather tip generation exception: {e}")
         tip_dict = {
