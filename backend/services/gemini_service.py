@@ -13,6 +13,7 @@ import os
 import sys
 import json
 import re
+import time
 import logging
 from typing import List, Dict, Any, Optional, Union, Tuple
 from dotenv import load_dotenv
@@ -26,25 +27,63 @@ logger = logging.getLogger(__name__)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 _last_gemini_error_reason = "service_unavailable"
 
+# Failed models cooldown cache: {model_name: timestamp_of_failure}
+_failed_models: Dict[str, float] = {}
+FAILED_MODEL_COOLDOWN_SECONDS: float = 300.0  # 5 minutes
+TOTAL_REQUEST_BUDGET_SECONDS: float = 25.0
+
 
 class GeminiRateLimitError(Exception):
     """Raised when Gemini API quota or rate limit is exhausted (429 / RESOURCE_EXHAUSTED)."""
     pass
 
 
+def is_model_in_cooldown(model_name: str) -> bool:
+    """Checks whether a model is currently in 5-minute failure cooldown."""
+    failed_at = _failed_models.get(model_name)
+    if not failed_at:
+        return False
+    if time.time() - failed_at < FAILED_MODEL_COOLDOWN_SECONDS:
+        return True
+    _failed_models.pop(model_name, None)
+    return False
+
+
+def mark_model_failed(model_name: str) -> None:
+    """Records failure timestamp for a model to skip it for the next 5 minutes."""
+    _failed_models[model_name] = time.time()
+    logger.info(f"Model '{model_name}' marked as failed; skipping for the next 5 minutes.")
+
+
+def clear_failed_models() -> None:
+    """Clears failed models cooldown cache (useful for testing and resets)."""
+    _failed_models.clear()
+
+
+def should_cooldown_model(reason_type: str, clean_desc: str, exc: Exception) -> bool:
+    """Determines whether an error qualifies for a 5-minute cooldown (404/not-found, invalid key, timeout)."""
+    if reason_type in ("model not found", "invalid key"):
+        return True
+    err_text = (clean_desc + " " + str(exc)).upper()
+    if any(k in err_text for k in ("TIMEOUT", "TIMED OUT", "DEADLINE", "504", "404", "NOT_FOUND", "NOT FOUND", "NO LONGER AVAILABLE")):
+        return True
+    return False
+
+
 def get_model_candidates() -> List[str]:
     """
     Returns candidate models in priority order.
-    Configured via GEMINI_MODEL (default: gemini-3.8-flash) and optional GEMINI_FALLBACK_MODELS.
-    Ensures resilient fallback across active models (gemini-3.8-flash, gemini-3-flash-preview).
+    Configured via GEMINI_MODEL (default: gemini-2.5-flash) and optional GEMINI_FALLBACK_MODELS.
+    Respects GEMINI_FALLBACK_MODELS exactly as set, including an empty value.
+    Does NOT append extra forced models.
     """
-    primary = os.getenv("GEMINI_MODEL", "gemini-3.8-flash").strip() or "gemini-3.8-flash"
-    fallback_str = os.getenv("GEMINI_FALLBACK_MODELS", "gemini-3-flash-preview,gemini-2.5-flash").strip()
-    fallbacks = [m.strip() for m in fallback_str.split(",") if m.strip()]
+    primary = os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip() or "gemini-2.5-flash"
+    fallback_env = os.getenv("GEMINI_FALLBACK_MODELS")
+    if fallback_env is not None:
+        fallbacks = [m.strip() for m in fallback_env.split(",") if m.strip()]
+    else:
+        fallbacks = []
     candidates = [primary] + [m for m in fallbacks if m != primary]
-    for backup in ["gemini-3.8-flash", "gemini-3-flash-preview"]:
-        if backup not in candidates:
-            candidates.append(backup)
     return candidates
 
 
@@ -76,7 +115,7 @@ def categorize_gemini_error(e: Exception) -> Tuple[str, str]:
         return "quota", "Quota or rate limit exhausted"
     elif "503" in err_upper or "UNAVAILABLE" in err_upper or "HIGH DEMAND" in err_upper:
         return "service unavailable", "Service temporarily experiencing high demand"
-    elif "504" in err_upper or "DEADLINE" in err_upper or "TIMEOUT" in err_upper:
+    elif "504" in err_upper or "DEADLINE" in err_upper or "TIMEOUT" in err_upper or "TIMED OUT" in err_upper:
         return "network", "Deadline exceeded / network timeout"
     elif "404" in err_upper or "NOT_FOUND" in err_upper or "NOT FOUND" in err_upper or "NO LONGER AVAILABLE" in err_upper:
         return "model not found", "Model not found or unsupported"
@@ -97,8 +136,8 @@ def get_gemini_client():
         from google import genai
         from google.genai import types
         http_options = types.HttpOptions(
-            timeout=15000,
-            retry_options=types.HttpRetryOptions(attempts=2)
+            timeout=12000,
+            retry_options=types.HttpRetryOptions(attempts=1)
         )
         return genai.Client(api_key=api_key, http_options=http_options)
     except Exception as e:
@@ -108,8 +147,37 @@ def get_gemini_client():
         return None
 
 
-def call_gemini_text(prompt: str, system_instruction: Optional[str] = None) -> Optional[str]:
-    """Helper to invoke Gemini text generation across candidate models."""
+def build_generate_content_config(
+    system_instruction: Optional[str] = None,
+    temperature: float = 0.4,
+    max_output_tokens: Optional[int] = None,
+    enable_thinking: bool = True,
+) -> Any:
+    """Builds GenerateContentConfig with optional token limits and LOW thinking config."""
+    from google.genai import types
+
+    config_kwargs: Dict[str, Any] = {"temperature": temperature}
+    if system_instruction:
+        config_kwargs["system_instruction"] = system_instruction
+    if max_output_tokens is not None:
+        config_kwargs["max_output_tokens"] = max_output_tokens
+
+    if enable_thinking:
+        try:
+            if hasattr(types, "ThinkingConfig"):
+                config_kwargs["thinking_config"] = types.ThinkingConfig(thinking_level="LOW")
+        except Exception as te:
+            logger.debug(f"ThinkingConfig init skipped: {te}")
+
+    return types.GenerateContentConfig(**config_kwargs)
+
+
+def call_gemini_text(
+    prompt: str,
+    system_instruction: Optional[str] = None,
+    max_output_tokens: Optional[int] = None,
+) -> Optional[str]:
+    """Helper to invoke Gemini text generation across candidate models with timeout budget and cooldown."""
     global _last_gemini_error_reason
     client = get_gemini_client()
     if not client:
@@ -118,31 +186,74 @@ def call_gemini_text(prompt: str, system_instruction: Optional[str] = None) -> O
         logger.warning("Gemini text call skipped: API key missing or invalid.")
         return None
 
-    from google.genai import types
-
     contents = prompt
-    config = types.GenerateContentConfig()
-    if system_instruction:
-        config.system_instruction = system_instruction
-    config.temperature = 0.4
+    config = build_generate_content_config(
+        system_instruction=system_instruction,
+        temperature=0.4,
+        max_output_tokens=max_output_tokens,
+        enable_thinking=True,
+    )
 
     models = get_model_candidates()
     rate_limit_hit = False
+    start_time = time.time()
 
     for model_name in models:
+        # Check total time budget across all models
+        if time.time() - start_time >= TOTAL_REQUEST_BUDGET_SECONDS:
+            logger.warning(
+                f"Total time budget ({TOTAL_REQUEST_BUDGET_SECONDS}s) exceeded. Stopping candidate model attempts."
+            )
+            _last_gemini_error_reason = "service_unavailable"
+            break
+
+        # Skip models currently in 5-minute cooldown
+        if is_model_in_cooldown(model_name):
+            logger.info(f"Skipping model '{model_name}' due to recent failure (5-minute cooldown active).")
+            continue
+
+        call_start = time.time()
         try:
             response = client.models.generate_content(
                 model=model_name,
                 contents=contents,
                 config=config,
             )
+            elapsed = time.time() - call_start
+            logger.info(f"Gemini call succeeded: model='{model_name}', elapsed={elapsed:.2f}s")
             if response and response.text:
-                logger.info(f"Gemini text answered successfully using model '{model_name}'")
                 return response.text.strip()
         except Exception as e:
+            # If rejected, retry once without thinking_config if it was used and budget allows
+            if (
+                getattr(config, "thinking_config", None) is not None
+                and (time.time() - start_time < TOTAL_REQUEST_BUDGET_SECONDS)
+            ):
+                logger.info(f"Retrying model '{model_name}' without thinking_config after error: {e}")
+                retry_start = time.time()
+                try:
+                    fallback_config = config.model_copy(deep=True) if hasattr(config, "model_copy") else config
+                    fallback_config.thinking_config = None
+                    response = client.models.generate_content(
+                        model=model_name,
+                        contents=contents,
+                        config=fallback_config,
+                    )
+                    retry_elapsed = time.time() - retry_start
+                    logger.info(f"Gemini call succeeded (retry without thinking): model='{model_name}', elapsed={retry_elapsed:.2f}s")
+                    if response and response.text:
+                        return response.text.strip()
+                except Exception as retry_err:
+                    e = retry_err
+
+            elapsed = time.time() - call_start
             reason_type, clean_desc = categorize_gemini_error(e)
-            sys.stderr.write(f"[Gemini Error] Model: {model_name} | Reason: {reason_type} ({clean_desc})\n")
-            logger.warning(f"Gemini call failed for model '{model_name}': {reason_type} - {clean_desc}")
+            sys.stderr.write(f"[Gemini Error] Model: {model_name} | Elapsed: {elapsed:.2f}s | Reason: {reason_type} ({clean_desc})\n")
+            logger.warning(f"Gemini call failed: model='{model_name}', elapsed={elapsed:.2f}s, reason={reason_type} - {clean_desc}")
+
+            if should_cooldown_model(reason_type, clean_desc, e):
+                mark_model_failed(model_name)
+
             if reason_type == "quota":
                 rate_limit_hit = True
                 _last_gemini_error_reason = "rate_limit"
@@ -157,13 +268,24 @@ def call_gemini_text(prompt: str, system_instruction: Optional[str] = None) -> O
     if rate_limit_hit:
         raise GeminiRateLimitError("Gemini API rate limit or quota exceeded (RESOURCE_EXHAUSTED / 429).")
 
+    if time.time() - start_time >= TOTAL_REQUEST_BUDGET_SECONDS:
+        _last_gemini_error_reason = "service_unavailable"
+
     return None
 
 
-def call_gemini_vision(image_bytes: bytes, mime_type: str, prompt: str, system_instruction: Optional[str] = None) -> Optional[str]:
+def call_gemini_vision(
+    image_bytes: bytes,
+    mime_type: str,
+    prompt: str,
+    system_instruction: Optional[str] = None,
+    max_output_tokens: Optional[int] = 1000,
+) -> Optional[str]:
     """Helper to invoke Gemini vision multimodal analysis."""
+    global _last_gemini_error_reason
     client = get_gemini_client()
     if not client:
+        _last_gemini_error_reason = "key_missing"
         sys.stderr.write("[Gemini Error] Model: None | Reason: invalid key (missing or placeholder)\n")
         return None
 
@@ -172,30 +294,73 @@ def call_gemini_vision(image_bytes: bytes, mime_type: str, prompt: str, system_i
     image_part = types.Part.from_bytes(data=image_bytes, mime_type=mime_type)
     contents = [prompt, image_part]
 
-    config = types.GenerateContentConfig()
-    if system_instruction:
-        config.system_instruction = system_instruction
-    config.temperature = 0.3
+    config = build_generate_content_config(
+        system_instruction=system_instruction,
+        temperature=0.3,
+        max_output_tokens=max_output_tokens,
+        enable_thinking=True,
+    )
 
     models = get_model_candidates()
     rate_limit_hit = False
+    start_time = time.time()
 
     for model_name in models:
+        if time.time() - start_time >= TOTAL_REQUEST_BUDGET_SECONDS:
+            logger.warning(f"Total time budget ({TOTAL_REQUEST_BUDGET_SECONDS}s) exceeded in vision call.")
+            _last_gemini_error_reason = "service_unavailable"
+            break
+
+        if is_model_in_cooldown(model_name):
+            logger.info(f"Skipping vision model '{model_name}' due to 5-minute cooldown.")
+            continue
+
+        call_start = time.time()
         try:
             response = client.models.generate_content(
                 model=model_name,
                 contents=contents,
                 config=config,
             )
+            elapsed = time.time() - call_start
+            logger.info(f"Gemini vision call succeeded: model='{model_name}', elapsed={elapsed:.2f}s")
             if response and response.text:
-                logger.info(f"Gemini vision answered successfully using model '{model_name}'")
                 return response.text.strip()
         except Exception as e:
+            if (
+                getattr(config, "thinking_config", None) is not None
+                and (time.time() - start_time < TOTAL_REQUEST_BUDGET_SECONDS)
+            ):
+                logger.info(f"Retrying vision on model '{model_name}' without thinking_config after error: {e}")
+                retry_start = time.time()
+                try:
+                    fallback_config = config.model_copy(deep=True) if hasattr(config, "model_copy") else config
+                    fallback_config.thinking_config = None
+                    response = client.models.generate_content(
+                        model=model_name,
+                        contents=contents,
+                        config=fallback_config,
+                    )
+                    retry_elapsed = time.time() - retry_start
+                    logger.info(f"Gemini vision call succeeded (retry without thinking): model='{model_name}', elapsed={retry_elapsed:.2f}s")
+                    if response and response.text:
+                        return response.text.strip()
+                except Exception as retry_err:
+                    e = retry_err
+
+            elapsed = time.time() - call_start
             reason_type, clean_desc = categorize_gemini_error(e)
-            sys.stderr.write(f"[Gemini Error] Model: {model_name} | Reason: {reason_type} ({clean_desc})\n")
-            logger.warning(f"Error calling vision on {model_name}: {reason_type} - {clean_desc}")
+            sys.stderr.write(f"[Gemini Error] Model: {model_name} | Elapsed: {elapsed:.2f}s | Reason: {reason_type} ({clean_desc})\n")
+            logger.warning(f"Error calling vision on '{model_name}': elapsed={elapsed:.2f}s, reason={reason_type} - {clean_desc}")
+
+            if should_cooldown_model(reason_type, clean_desc, e):
+                mark_model_failed(model_name)
+
             if reason_type == "quota":
                 rate_limit_hit = True
+                _last_gemini_error_reason = "rate_limit"
+            else:
+                _last_gemini_error_reason = "service_unavailable"
             continue
 
     if rate_limit_hit:
@@ -217,7 +382,7 @@ def check_ai_status() -> Dict[str, Any]:
     }
     """
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
-    primary_model = os.getenv("GEMINI_MODEL", "gemini-3.8-flash").strip() or "gemini-3.8-flash"
+    primary_model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip() or "gemini-2.5-flash"
 
     if not api_key or api_key == "your_gemini_api_key_here":
         return {
@@ -239,11 +404,18 @@ def check_ai_status() -> Dict[str, Any]:
     models = get_model_candidates()
     last_err_desc = "API call failed"
     for m in models:
+        if is_model_in_cooldown(m):
+            logger.info(f"AI status check skipping model '{m}' (5-minute cooldown active).")
+            continue
+
+        call_start = time.time()
         try:
             res = client.models.generate_content(
                 model=m,
                 contents="Say OK",
             )
+            elapsed = time.time() - call_start
+            logger.info(f"AI status test succeeded: model='{m}', elapsed={elapsed:.2f}s")
             if res and res.text:
                 return {
                     "key_loaded": True,
@@ -252,9 +424,12 @@ def check_ai_status() -> Dict[str, Any]:
                     "error": None
                 }
         except Exception as e:
+            elapsed = time.time() - call_start
             reason_type, clean_desc = categorize_gemini_error(e)
-            sys.stderr.write(f"[Gemini Error] Model: {m} | Reason: {reason_type} ({clean_desc})\n")
-            logger.warning(f"AI status live test failed for model '{m}': {reason_type} - {clean_desc}")
+            sys.stderr.write(f"[Gemini Error] Model: {m} | Elapsed: {elapsed:.2f}s | Reason: {reason_type} ({clean_desc})\n")
+            logger.warning(f"AI status live test failed for model '{m}': elapsed={elapsed:.2f}s, reason={reason_type} - {clean_desc}")
+            if should_cooldown_model(reason_type, clean_desc, e):
+                mark_model_failed(m)
             last_err_desc = clean_desc
             continue
 
@@ -331,7 +506,8 @@ def generate_chat_reply(
         + "\n\nPlease reply to the farmer's latest query now:"
     )
 
-    result = call_gemini_text(full_prompt, system_instruction=system_prompt)
+    # Chat max_output_tokens set to approx 600
+    result = call_gemini_text(full_prompt, system_instruction=system_prompt, max_output_tokens=600)
     if result:
         return {"text": result, "source": "ai"}
 
@@ -437,7 +613,8 @@ def generate_crop_advice(crop: str, season: str, soil: str = "", question: str =
         f"Keep the tone encouraging, warm and practical."
     )
 
-    result = call_gemini_text(prompt, system_instruction=system_prompt)
+    # Crop advice max_output_tokens set to approx 900
+    result = call_gemini_text(prompt, system_instruction=system_prompt, max_output_tokens=900)
     if result:
         return {"text": result, "source": "ai"}
 
@@ -532,7 +709,8 @@ def generate_weather_tip(weather_data: Dict[str, Any], language: str = "hi") -> 
 
     system_prompt = f"You are KisanMitra AI, an expert agro-meteorologist advising Indian farmers in {lang_name}."
 
-    result = call_gemini_text(prompt, system_instruction=system_prompt)
+    # Weather tip max_output_tokens set to approx 500
+    result = call_gemini_text(prompt, system_instruction=system_prompt, max_output_tokens=500)
     if result:
         return {"text": result, "source": "ai"}
 
@@ -627,7 +805,7 @@ def generate_plant_diagnosis(
         f"Explain clearly and simply in {lang_name} so any farmer can understand and take safe action."
     )
 
-    result = call_gemini_vision(image_bytes, mime_type, prompt, system_instruction=system_prompt)
+    result = call_gemini_vision(image_bytes, mime_type, prompt, system_instruction=system_prompt, max_output_tokens=1000)
     if result:
         return {"text": result, "source": "ai"}
 

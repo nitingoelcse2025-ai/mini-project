@@ -462,3 +462,134 @@ def test_check_ai_status_unit_with_mock_client(monkeypatch):
         assert result["error"] is None
         mock_client.models.generate_content.assert_called_once()
 
+
+# =====================================================================
+# 13. Gemini Model Candidates Tests (Item 1)
+# =====================================================================
+
+def test_get_model_candidates_default_and_empty_fallback(monkeypatch):
+    """Verifies default primary is gemini-2.5-flash and empty fallback is respected without forced appending."""
+    from services.gemini_service import get_model_candidates
+
+    monkeypatch.delenv("GEMINI_MODEL", raising=False)
+    monkeypatch.delenv("GEMINI_FALLBACK_MODELS", raising=False)
+    assert get_model_candidates() == ["gemini-2.5-flash"]
+
+    # Explicit empty string in GEMINI_FALLBACK_MODELS
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-2.5-flash")
+    monkeypatch.setenv("GEMINI_FALLBACK_MODELS", "")
+    assert get_model_candidates() == ["gemini-2.5-flash"]
+
+    # Explicit custom models without extra forced models
+    monkeypatch.setenv("GEMINI_MODEL", "primary-model")
+    monkeypatch.setenv("GEMINI_FALLBACK_MODELS", "fb-1, fb-2")
+    assert get_model_candidates() == ["primary-model", "fb-1", "fb-2"]
+
+
+# =====================================================================
+# 14. Failed Model Cooldown Tests (Item 2)
+# =====================================================================
+
+def test_failed_model_cooldown_mechanism(monkeypatch):
+    """Verifies that 404, invalid key, or timeouts trigger a 5-minute cooldown skipping the bad model."""
+    from services.gemini_service import (
+        clear_failed_models,
+        mark_model_failed,
+        is_model_in_cooldown,
+        call_gemini_text,
+        _failed_models,
+    )
+    from unittest.mock import MagicMock
+    import time
+
+    clear_failed_models()
+    monkeypatch.setenv("GEMINI_API_KEY", "test_mock_key")
+    monkeypatch.setenv("GEMINI_MODEL", "bad-model-404")
+    monkeypatch.setenv("GEMINI_FALLBACK_MODELS", "working-model")
+
+    mock_client = MagicMock()
+
+    def mock_generate(model, contents, config=None):
+        if model == "bad-model-404":
+            raise Exception("404 NOT_FOUND: model not found")
+        mock_ok = MagicMock()
+        mock_ok.text = "Answer from working model"
+        return mock_ok
+
+    mock_client.models.generate_content.side_effect = mock_generate
+
+    with patch("services.gemini_service.get_gemini_client", return_value=mock_client):
+        # 1st call: bad-model-404 fails and triggers cooldown
+        res1 = call_gemini_text("Test prompt")
+        assert res1 == "Answer from working model"
+        assert is_model_in_cooldown("bad-model-404") is True
+
+        # Reset call counts
+        mock_client.models.generate_content.reset_mock()
+
+        # 2nd call: bad-model-404 should be skipped immediately via cooldown
+        res2 = call_gemini_text("Test prompt")
+        assert res2 == "Answer from working model"
+        # Only working-model was called, bad-model-404 was skipped!
+        called_models = [call.kwargs.get("model") for call in mock_client.models.generate_content.call_args_list]
+        assert "bad-model-404" not in called_models
+        assert called_models == ["working-model"]
+
+    clear_failed_models()
+
+
+# =====================================================================
+# 15. Per-call Timeout, Retries, and Time Budget Tests (Item 3)
+# =====================================================================
+
+def test_get_gemini_client_http_options(monkeypatch):
+    """Verifies that get_gemini_client configures 1 retry attempt and 12s timeout."""
+    from services.gemini_service import get_gemini_client
+    from unittest.mock import MagicMock
+
+    monkeypatch.setenv("GEMINI_API_KEY", "test_mock_api_key")
+
+    with patch("google.genai.Client") as mock_genai_client:
+        get_gemini_client()
+        mock_genai_client.assert_called_once()
+        http_opt = mock_genai_client.call_args.kwargs.get("http_options")
+        assert http_opt.timeout == 12000
+        assert http_opt.retry_options.attempts == 1
+
+
+def test_total_time_budget_stops_models_and_returns_service_unavailable(monkeypatch):
+    """Verifies that exceeding the ~25s budget stops trying models and returns service_unavailable."""
+    from services.gemini_service import generate_chat_reply, clear_failed_models
+    from unittest.mock import MagicMock
+    import time
+
+    clear_failed_models()
+    monkeypatch.setenv("GEMINI_API_KEY", "test_mock_api_key")
+    monkeypatch.setenv("GEMINI_MODEL", "model-slow-1")
+    monkeypatch.setenv("GEMINI_FALLBACK_MODELS", "model-slow-2,model-3")
+
+    mock_client = MagicMock()
+
+    # Simulate slow calls exceeding total 25s budget
+    fake_time = [0.0]
+
+    def time_now():
+        return fake_time[0]
+
+    def mock_generate(model, contents, config=None):
+        fake_time[0] += 26.0  # Elapse 26s during first model
+        raise Exception("504 DEADLINE_EXCEEDED")
+
+    mock_client.models.generate_content.side_effect = mock_generate
+
+    with patch("services.gemini_service.get_gemini_client", return_value=mock_client), \
+         patch("time.time", side_effect=time_now):
+        reply = generate_chat_reply("गेहूं में पानी कब दें?", language="hi")
+        assert reply["source"] == "fallback"
+        assert reply["reason"] == "service_unavailable"
+        # model-slow-2 and model-3 should not be called because budget was exceeded
+        assert mock_client.models.generate_content.call_count == 1
+
+    clear_failed_models()
+
+

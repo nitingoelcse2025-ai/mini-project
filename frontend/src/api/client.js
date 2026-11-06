@@ -8,7 +8,7 @@ const apiClient = axios.create({
   headers: {
     'Content-Type': 'application/json',
   },
-  timeout: 30000, // 30s timeout for AI generation
+  timeout: 60000, // 60s timeout for AI generation endpoints
 });
 
 // Helper for standardized error messages

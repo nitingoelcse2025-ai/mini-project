@@ -226,7 +226,7 @@ const Chat = () => {
             </div>
             <div className="bg-white border-2 border-emerald-100 rounded-3xl px-5 py-3 shadow-sm flex items-center gap-2">
               <span className="text-sm font-bold text-emerald-800 animate-pulse">
-                {t('chat.listening')}
+                {t('chat.thinking') || t('chat.listening')}
               </span>
               <div className="flex gap-1">
                 <span className="w-2 h-2 rounded-full bg-emerald-600 animate-bounce" />
